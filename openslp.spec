@@ -1,6 +1,6 @@
 Name:			openslp
 Version:		2.0.0
-Release:		2%{?dist}
+Release:		3%{?dist}
 Epoch:			1
 Summary:		Open implementation of Service Location Protocol V2
 
@@ -11,6 +11,10 @@ Source0:		http://downloads.sourceforge.net/openslp/%{name}-%{version}.tar.gz
 BuildRoot:		%(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 
 Patch0:			openslp-2.0.0-double-free-and-deadcode.patch
+# Patch1: fixes heap memory corruption in slpd/slpd_process.c, which allows
+#   denial of service or potentially code execution,
+#   backported form upstream, CVE-2017-17833
+Patch1:  openslp-2.0.0-cve-2017-17833.patch
 
 BuildRequires:		bison flex openssl-devel doxygen
 BuildRequires:		automake libtool
@@ -61,6 +65,7 @@ such applications.
 %prep
 %setup -q
 %patch0 -p1 -b .double-free-and-deadcode
+%patch1 -p1 -b .cve-2017-17833
 
 
 %build
@@ -137,6 +142,10 @@ fi
 
 
 %changelog
+* Wed Jul 25 2018 Vitezslav Crhonek <vcrhonek@redhat.com> - 2.0.0-3
+- Fix possible heap memory corruption, CVE-2017-17833
+  Resolves: #1575699
+
 * Wed Aug 06 2014 Vitezslav Crhonek <vcrhonek@redhat.com> - 2.0.0-2
 - Fix possible double free error and remve non reachable code
   Resolves: #1122090
