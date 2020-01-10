@@ -541,6 +541,12 @@ char *yytext;
  */
 #line 44 "slp_filter_l.l"
 
+#if ((__GNUC__ * 100) + __GNUC_MINOR__) >= 402
+# pragma GCC diagnostic ignored "-Wunused-function"
+# pragma GCC diagnostic ignored "-Wint-to-pointer-cast"
+# pragma GCC diagnostic ignored "-Wpointer-to-int-cast"
+#endif
+
 #undef YYLMAX
 #define YYLMAX 2048
 
@@ -602,7 +608,7 @@ unsigned int slp_filter_init_lexer(const char *s);
 /* special lexer states */
 
 /* table size directives */
-#line 606 "slp_filter_l.c"
+#line 612 "slp_filter_l.c"
 
 #define INITIAL 0
 #define QUOTED_STRING 1
@@ -790,10 +796,10 @@ YY_DECL
 	register char *yy_cp, *yy_bp;
 	register int yy_act;
     
-#line 116 "slp_filter_l.l"
+#line 122 "slp_filter_l.l"
 
 
-#line 797 "slp_filter_l.c"
+#line 803 "slp_filter_l.c"
 
 	if ( !(yy_init) )
 		{
@@ -878,12 +884,12 @@ do_action:	/* This label is used only to access EOF actions. */
 
 case 1:
 YY_RULE_SETUP
-#line 118 "slp_filter_l.l"
+#line 124 "slp_filter_l.l"
 { BEGIN QUOTED_STRING; yyless(0); }
 	YY_BREAK
 case 2:
 YY_RULE_SETUP
-#line 119 "slp_filter_l.l"
+#line 125 "slp_filter_l.l"
 {
                                  BEGIN INITIAL; 
                                  if(0 != (yylval.filter_string =  xstrdup(yytext)))
@@ -894,74 +900,74 @@ YY_RULE_SETUP
 	YY_BREAK
 case 3:
 YY_RULE_SETUP
-#line 128 "slp_filter_l.l"
+#line 134 "slp_filter_l.l"
 { ; }
 	YY_BREAK
 case 4:
 YY_RULE_SETUP
-#line 129 "slp_filter_l.l"
+#line 135 "slp_filter_l.l"
 { yylval.filter_int = L_PAREN; return L_PAREN ; }
 	YY_BREAK
 case 5:
 YY_RULE_SETUP
-#line 130 "slp_filter_l.l"
+#line 136 "slp_filter_l.l"
 { yylval.filter_int = R_PAREN; return R_PAREN ; }
 	YY_BREAK
 case 6:
 YY_RULE_SETUP
-#line 131 "slp_filter_l.l"
+#line 137 "slp_filter_l.l"
 { yylval.filter_int = OP_AND; return OP_AND ; }
 	YY_BREAK
 case 7:
 YY_RULE_SETUP
-#line 132 "slp_filter_l.l"
+#line 138 "slp_filter_l.l"
 { yylval.filter_int = OP_OR; return OP_OR ; }
 	YY_BREAK
 case 8:
 YY_RULE_SETUP
-#line 133 "slp_filter_l.l"
+#line 139 "slp_filter_l.l"
 { yylval.filter_int = OP_NOT; return OP_NOT ; }
 	YY_BREAK
 case 9:
 YY_RULE_SETUP
-#line 134 "slp_filter_l.l"
+#line 140 "slp_filter_l.l"
 { yylval.filter_int = OP_EQU; return OP_EQU ; }
 	YY_BREAK
 case 10:
 YY_RULE_SETUP
-#line 135 "slp_filter_l.l"
+#line 141 "slp_filter_l.l"
 { yylval.filter_int = OP_GT; return OP_GT ; }
 	YY_BREAK
 case 11:
 YY_RULE_SETUP
-#line 136 "slp_filter_l.l"
+#line 142 "slp_filter_l.l"
 { yylval.filter_int = OP_LT; return OP_LT ; }
 	YY_BREAK
 case 12:
 YY_RULE_SETUP
-#line 137 "slp_filter_l.l"
+#line 143 "slp_filter_l.l"
 { yylval.filter_int = OP_PRESENT; return OP_PRESENT ; }
 	YY_BREAK
 case 13:
 YY_RULE_SETUP
-#line 138 "slp_filter_l.l"
+#line 144 "slp_filter_l.l"
 { yylval.filter_int = OP_APPROX; return OP_APPROX ;  }
 	YY_BREAK
 case 14:
-#line 142 "slp_filter_l.l"
+#line 148 "slp_filter_l.l"
 case 15:
 YY_RULE_SETUP
-#line 142 "slp_filter_l.l"
+#line 148 "slp_filter_l.l"
 { 
                               yylval.filter_int = strtol(yytext, (char **) 0, 0) ;
                               return VAL_INT;
                             }
 	YY_BREAK
 case 16:
-#line 148 "slp_filter_l.l"
+#line 154 "slp_filter_l.l"
 case 17:
 YY_RULE_SETUP
-#line 148 "slp_filter_l.l"
+#line 154 "slp_filter_l.l"
 { 
                               yylval.filter_int = strtoul(yytext, (char **) 0, 0);
                               return VAL_INT;
@@ -969,14 +975,14 @@ YY_RULE_SETUP
 	YY_BREAK
 case 18:
 YY_RULE_SETUP
-#line 153 "slp_filter_l.l"
+#line 159 "slp_filter_l.l"
 { 
                                yylval.filter_int = 1; return VAL_BOOL; 
                             }
 	YY_BREAK
 case 19:
 YY_RULE_SETUP
-#line 158 "slp_filter_l.l"
+#line 164 "slp_filter_l.l"
 { 
                                yylval.filter_int = 0; return VAL_BOOL; 
                             }
@@ -984,7 +990,7 @@ YY_RULE_SETUP
 case 20:
 /* rule 20 can match eol */
 YY_RULE_SETUP
-#line 163 "slp_filter_l.l"
+#line 169 "slp_filter_l.l"
 {
                                  if(0 != (yylval.filter_string =  xstrdup(yytext)))
                                     return(OPERAND) ; 
@@ -994,10 +1000,10 @@ YY_RULE_SETUP
 	YY_BREAK
 case 21:
 YY_RULE_SETUP
-#line 170 "slp_filter_l.l"
+#line 176 "slp_filter_l.l"
 ECHO;
 	YY_BREAK
-#line 1001 "slp_filter_l.c"
+#line 1007 "slp_filter_l.c"
 case YY_STATE_EOF(INITIAL):
 case YY_STATE_EOF(QUOTED_STRING):
 	yyterminate();
@@ -1996,7 +2002,7 @@ void yyfree (void * ptr )
 
 #define YYTABLES_NAME "yytables"
 
-#line 170 "slp_filter_l.l"
+#line 176 "slp_filter_l.l"
 
 
 

@@ -56,6 +56,7 @@
 #define SLP_RESERVED_PORT       427          /*!< The SLP port number */
 #define SLP_MCAST_ADDRESS       0xeffffffd   /*!< 239.255.255.253 */
 #define SLP_BCAST_ADDRESS       0xffffffff   /*!< 255.255.255.255 */
+#define SLPv1_SL_MCAST_ADDRESS  0xe0000116   /*!< 224.0.1.22 */
 #define SLPv1_DA_MCAST_ADDRESS  0xe0000123   /*!< 224.0.1.35 */
 #define LOOPBACK_ADDRESS        0x7f000001   /*!< 127.0.0.1 */
 
@@ -182,6 +183,9 @@
          (((uint8_t *)(p))[2] = (uint8_t)(((v) >>  8) & 0xff)),   \
          (((uint8_t *)(p))[3] = (uint8_t)(((v)      ) & 0xff))    \
       )
+
+/* Assuming the current byte is the packet version, returns the length */
+#define PEEK_LENGTH(p) ((*p == 2) ? AS_UINT24(p + 2) : (*p == 1) ? AS_UINT16(p + 2) : 1)
 
 /* buffer-based wire routines */
 uint16_t GetUINT16(uint8_t ** cpp);

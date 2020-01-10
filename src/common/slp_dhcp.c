@@ -140,7 +140,11 @@ static sockfd_t dhcpCreateBCSkt(void * peeraddr)
 static int dhcpSendRequest(sockfd_t sockfd, void * buf, size_t bufsz,
       void * addr, size_t addrsz, struct timeval * timeout)
 {
+#if HAVE_POLL
+   struct pollfd writefd;
+#else
    fd_set writefds;
+#endif
    int xferbytes;
    int flags = 0;
 
@@ -148,10 +152,17 @@ static int dhcpSendRequest(sockfd_t sockfd, void * buf, size_t bufsz,
    flags = MSG_NOSIGNAL;
 #endif
 
+#if HAVE_POLL
+   writefd.fd = sockfd;
+   writefd.events = POLLOUT;
+   writefd.revents = 0;
+   xferbytes = poll(&writefd, 1, timeout ? timeout->tv_sec * 1000 + timeout->tv_usec / 1000 : -1);
+#else
    FD_ZERO(&writefds);
    FD_SET(sockfd, &writefds);
-
-   if ((xferbytes = select((int)sockfd + 1, 0, &writefds, 0, timeout)) > 0)
+   xferbytes = select((int)sockfd + 1, 0, &writefds, 0, timeout);
+#endif
+   if(xferbytes > 0)
    {
       if ((xferbytes = sendto(sockfd, (char *)buf, (int)bufsz, flags, 
             addr, (int)addrsz)) <= 0)
@@ -193,12 +204,23 @@ static int dhcpRecvResponse(sockfd_t sockfd, void * buf, size_t bufsz,
       struct timeval * timeout)
 {
    int xferbytes;
+#if HAVE_POLL
+   struct pollfd readfd;
+#else
    fd_set readfds;
+#endif
 
+#if HAVE_POLL
+   readfd.fd = sockfd;
+   readfd.events = POLLIN;
+   readfd.revents = 0;
+   xferbytes = poll(&readfd, 1, timeout ? timeout->tv_sec * 1000 + timeout->tv_usec / 1000 : -1);
+#else
    FD_ZERO(&readfds);
    FD_SET(sockfd, &readfds);
-
-   if ((xferbytes = select((int)sockfd + 1, &readfds, 0 , 0, timeout)) > 0)
+   xferbytes = select((int)sockfd + 1, &readfds, 0 , 0, timeout);
+#endif
+   if(xferbytes > 0)
    {
       if ((xferbytes = recvfrom(sockfd, (char *)buf, (int)bufsz, 0, 0, 0)) <= 0)
       {
@@ -535,10 +557,10 @@ int DHCPParseSLPTags(int tag, void * optdata, size_t optdatasz,
       case TAG_SLP_SCOPE:
 
          /* Draft 3 format is only supported for ASCII and UNICODE
-         *  character encodings - UTF8 encodings must use rfc2610 format.
-         *  To determine the format, we parse 2 bytes and see if the result
-         *  is a valid encoding. If so it's draft 3, otherwise rfc2610. 
-         */
+          *  character encodings - UTF8 encodings must use rfc2610 format.
+          *  To determine the format, we parse 2 bytes and see if the result
+          *  is a valid encoding. If so it's draft 3, otherwise rfc2610. 
+          */
          encoding = (optdatasz > 1)? AS_UINT16(p): 0;
          if (encoding != CT_ASCII && encoding != CT_UNICODE)
          {
@@ -560,18 +582,19 @@ int DHCPParseSLPTags(int tag, void * optdata, size_t optdatasz,
             ctxp->scopelistlen = optdatasz < sizeof(ctxp->scopelist)? 
                   optdatasz: sizeof(ctxp->scopelist);
             strncpy(ctxp->scopelist, (char*)p, ctxp->scopelistlen);
+            ctxp->scopelist[sizeof(ctxp->scopelist) - 1] = 0;
          }
          else
          {
-            /* draft 3 format: defined to configure scopes for SA's only
-            *  so we should flag the scopes to be used only as registration
-            *  filter scopes - add code to handle this case later...
-            *
-            *  offs     len      name        description
-            *  0        2        encoding    character encoding used 
-            *  2        n        scopelist   list of scopes as asciiz string.
-            *
-            */
+            /* Draft 3 format: defined to configure scopes for SA's only
+             *  so we should flag the scopes to be used only as registration
+             *  filter scopes - add code to handle this case later...
+             *
+             *  offs     len      name        description
+             *  0        2        encoding    character encoding used 
+             *  2        n        scopelist   list of scopes as asciiz string.
+             *
+             */
             optdatasz -= 2;   /* skip encoding bytes */
             p += 2;
 
@@ -583,6 +606,7 @@ int DHCPParseSLPTags(int tag, void * optdata, size_t optdatasz,
                ctxp->scopelistlen = optdatasz < sizeof(ctxp->scopelist)? 
                      optdatasz: sizeof(ctxp->scopelist);
                strncpy(ctxp->scopelist, (char*)p, ctxp->scopelistlen);
+               ctxp->scopelist[sizeof(ctxp->scopelist) - 1] = 0;
             }
          }
          break;
@@ -592,18 +616,18 @@ int DHCPParseSLPTags(int tag, void * optdata, size_t optdatasz,
          optdatasz--;
 
          /* If the flags byte has the high bit set, we know we are
-         *  using draft 3 format, otherwise rfc2610 format. 
-         */
+          *  using draft 3 format, otherwise rfc2610 format. 
+          */
          if (!(flags & DA_NAME_PRESENT))
          {
             /* rfc2610 format */
             if (flags)
             {
                /* If the mandatory byte is non-zero, indicate that 
-               *  multicast is not to be used to dynamically discover 
-               *  directory agents on this interface by setting the 
-               *  LACBF_STATIC_DA flag in the LACB for this interface. 
-               */
+                *  multicast is not to be used to dynamically discover 
+                *  directory agents on this interface by setting the 
+                *  LACBF_STATIC_DA flag in the LACB for this interface. 
+                */
 
                /* skip this for now - deal with it later... */
             }
@@ -616,11 +640,11 @@ int DHCPParseSLPTags(int tag, void * optdata, size_t optdatasz,
          else
          {
             /* pre-rfc2610 (draft 3) format:
-            *     offs     len      name     description
-            *     0        1        flags    contains 4 flags (defined above)
-            *     1        1        dasize   name or addr length
-            *     2        dasize   daname   da name or ip address (flags)
-            */
+             *     offs     len      name     description
+             *     0        1        flags    contains 4 flags (defined above)
+             *     1        1        dasize   name or addr length
+             *     2        dasize   daname   da name or ip address (flags)
+             */
             dasize = *p++;
             optdatasz--;
 

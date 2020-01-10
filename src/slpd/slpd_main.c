@@ -60,55 +60,122 @@
 
 int G_SIGALRM;
 int G_SIGTERM;
-int G_SIGHUP;                                                                                                 
+int G_SIGHUP;
 #ifdef DEBUG
 int G_SIGINT;     /* Signal being used for dumping registrations */
 int G_SIGUSR1;    /* Signal being used to dump information about the database */
-#endif 
+#endif
 
 /** Configures fd_set objects with sockets.
  *
- * @param[in] socklist - The list of sockets that is being currently 
+ * @param[in] socklist - The list of sockets that is being currently
  *    monitored by OpenSLP components.
- * @param[out] highfd - The address of storage for returning the value 
+ * @param[out] highfd - The address of storage for returning the value
  *    of the highest file descriptor (number) in use.
- * @param[out] readfds - The fd_set to fill with read descriptors.
- * @param[out] writefds - The fd_set to fill with write descriptors.
+ * @param[out] fdset - The fdset to fill with read/write descriptors.
  */
-void LoadFdSets(SLPList * socklist, sockfd_t * highfd, fd_set * readfds, 
-      fd_set * writefds)
+void LoadFdSets(SLPList * socklist, SLPD_fdset * fdset)
 {
+#if HAVE_POLL
+
    SLPDSocket * sock = 0;
    SLPDSocket * del = 0;
 
    sock = (SLPDSocket *)socklist->head;
    while (sock)
    {
-      if (sock->fd > *highfd)
-         *highfd = sock->fd;
+      if (fdset->used == fdset->allocated)
+      {
+         fdset->allocated += 32;
+         if (fdset->used)
+            fdset->fds = xrealloc(fdset->fds, fdset->allocated * sizeof(*fdset->fds));
+         else
+            fdset->fds = xmalloc(fdset->allocated * sizeof(*fdset->fds));
+         if (!fdset->fds)
+            SLPDFatal("No memory for fdset.\n");
+      }
+      fdset->fds[fdset->used].fd = sock->fd;
+      fdset->fds[fdset->used].events = 0;
+      fdset->fds[fdset->used].revents = 0;
+      switch (sock->state)
+      {
+         case DATAGRAM_UNICAST:
+         case DATAGRAM_MULTICAST:
+         case DATAGRAM_BROADCAST:
+            fdset->fds[fdset->used].events |= POLLIN;
+            break;
+
+         case SOCKET_LISTEN:
+            if (socklist->count < SLPD_MAX_SOCKETS)
+               fdset->fds[fdset->used].events |= POLLIN;
+            break;
+
+         case STREAM_READ:
+         case STREAM_READ_FIRST:
+            fdset->fds[fdset->used].events |= POLLIN;
+            break;
+
+         case STREAM_WRITE:
+         case STREAM_WRITE_FIRST:
+         case STREAM_CONNECT_BLOCK:
+            fdset->fds[fdset->used].events |= POLLOUT;
+            break;
+
+         case SOCKET_CLOSE:
+            del = sock;
+            break;
+
+         default:
+            break;
+      }
+
+      if (fdset->fds[fdset->used].events)
+         sock->fdsetnr = fdset->used++;
+      else
+         sock->fdsetnr = -1;
+
+      sock = (SLPDSocket*)sock->listitem.next;
+
+      if (del)
+      {
+         SLPDSocketFree((SLPDSocket*)SLPListUnlink(socklist,(SLPListItem*)del));
+         del = 0;
+      }
+   }
+
+#else   /* HAVE_POLL */
+
+   SLPDSocket* sock = 0;
+   SLPDSocket* del = 0;
+
+   sock = (SLPDSocket*)socklist->head;
+   while(sock)
+   {
+      if (sock->fd > fdset->highfd)
+         fdset->highfd = sock->fd;
 
       switch(sock->state)
       {
          case DATAGRAM_UNICAST:
          case DATAGRAM_MULTICAST:
          case DATAGRAM_BROADCAST:
-            FD_SET(sock->fd,readfds);
+            FD_SET(sock->fd, &fdset->readfds);
             break;
 
          case SOCKET_LISTEN:
             if (socklist->count < SLPD_MAX_SOCKETS)
-               FD_SET(sock->fd,readfds);
+               FD_SET(sock->fd, &fdset->readfds);
             break;
 
          case STREAM_READ:
          case STREAM_READ_FIRST:
-            FD_SET(sock->fd,readfds);
+            FD_SET(sock->fd, &fdset->readfds);
             break;
 
          case STREAM_WRITE:
          case STREAM_WRITE_FIRST:
          case STREAM_CONNECT_BLOCK:
-            FD_SET(sock->fd,writefds);
+            FD_SET(sock->fd, &fdset->writefds);
             break;
 
          case SOCKET_CLOSE:
@@ -119,13 +186,15 @@ void LoadFdSets(SLPList * socklist, sockfd_t * highfd, fd_set * readfds,
             break;
       }
       sock = (SLPDSocket*)sock->listitem.next;
-      if(del)
+      if (del)
       {
          SLPDSocketFree((SLPDSocket *)SLPListUnlink(socklist,
                (SLPListItem*)del));
          del = 0;
       }
    }
+
+#endif  /* HAVE_POLL */
 }
 
 /** Handles a SIG_TERM signal from the system.
@@ -133,10 +202,10 @@ void LoadFdSets(SLPList * socklist, sockfd_t * highfd, fd_set * readfds,
 void HandleSigTerm(void)
 {
    struct timeval timeout;
-   fd_set readfds;
-   fd_set writefds;
-   sockfd_t highfd = 0;
+   SLPD_fdset fdset;
    int fdcount = 0;
+
+   SLPD_fdset_init(&fdset);
 
    SLPDLog("****************************************\n");
    SLPDLogTime();
@@ -147,7 +216,7 @@ void HandleSigTerm(void)
    SLPDKnownDADeinit();
 
    timeout.tv_sec  = 5;
-   timeout.tv_usec = 0; 
+   timeout.tv_usec = 0;
 
    /* Do a dead DA passive advert to tell everyone we're goin' down */
    SLPDKnownDAPassiveDAAdvert(0, 1);
@@ -158,13 +227,16 @@ void HandleSigTerm(void)
    /* if possible wait until all outgoing socket are done and closed */
    while (SLPDOutgoingDeinit(1))
    {
-      FD_ZERO(&writefds);
-      FD_ZERO(&readfds);
-      LoadFdSets(&G_OutgoingSocketList, &highfd, &readfds, &writefds);
-      fdcount = select((int)(highfd + 1), &readfds, &writefds, 0, &timeout);
+      SLPD_fdset_reset(&fdset);
+      LoadFdSets(&G_OutgoingSocketList, &fdset);
+#if HAVE_POLL
+      fdcount = poll(fdset.fds, fdset.used, timeout.tv_sec * 1000 + timeout.tv_usec / 1000);
+#else
+      fdcount = select((int)fdset.highfd + 1, &fdset.readfds, &fdset.writefds, 0, &timeout);
+#endif
       if (fdcount == 0)
          break;
-      SLPDOutgoingHandler(&fdcount, &readfds, &writefds);
+      SLPDOutgoingHandler(&fdcount, &fdset);
    }
 
    SLPDOutgoingDeinit(0);
@@ -181,7 +253,7 @@ void HandleSigTerm(void)
    SLPDDatabaseDeinit();
    SLPDPropertyDeinit();
    SLPDLogFileClose();
-   xmalloc_deinit();    
+   xmalloc_deinit();
 #endif
 }
 
@@ -199,10 +271,8 @@ static void HandleSigUsr1(void)
 #endif
 
 /** Handles a SIG_HUP signal from the system.
- *
- * @internal
  */
-static void HandleSigHup(void)
+void HandleSigHup(void)
 {
    /* Reinitialize */
    SLPDLog("****************************************\n");
@@ -224,6 +294,9 @@ static void HandleSigHup(void)
    /* Re-read the static registration file (slp.reg)*/
    SLPDDatabaseReInit(G_SlpdCommandLine.regfile);
 
+   /* Reopen listening sockets */
+   SLPDIncomingReinit();
+
    /* Rebuild Known DA database */
    SLPDKnownDAInit();
 
@@ -231,6 +304,7 @@ static void HandleSigHup(void)
    SLPDLogTime();
    SLPDLog("SLPD daemon reset finished\n");
    SLPDLog("****************************************\n\n");
+   SLPDLog("Agent Interfaces = %s\n", G_SlpdProperty.interfaces);
 }
 
 /** Handles a SIG_ALRM signal from the system.
@@ -278,13 +352,13 @@ static int CheckPid(const char * pidfile)
    char pidstr[14];
 
    /* make sure that we're not running already
-      read the pid from the file 
+      read the pid from the file
     */
    fd = fopen(pidfile, "r");
    if (fd)
    {
       memset(pidstr,0,14);
-      fread(pidstr,13,1,fd);
+      (void)fread(pidstr,13,1,fd);
       pid = atoi(pidstr);
       if (pid && kill(pid, 0) == 0)
          return -1;  /* we are already running */
@@ -325,17 +399,14 @@ static int CheckPid(const char * pidfile)
  * @param[in] pidfile - The name of a file to which the process id should
  *    be written.
  *
- * @return Zero on success, or a non-zero value if slpd could not daemonize 
+ * @return Zero on success, or a non-zero value if slpd could not daemonize
  *    (or if slpd is already running).
  *
  * @internal
  */
 static int Daemonize(const char * pidfile)
 {
-   FILE * fd;
-   struct passwd * pwent;
    pid_t pid;
-   char pidstr[14];
 
    /* fork() if we should detach */
    if (G_SlpdCommandLine.detach)
@@ -354,10 +425,12 @@ static int Daemonize(const char * pidfile)
          break;
 
       default:
+      {
          /* parent writes pid (or child) pid file and dies */
-         fd = fopen(pidfile,"w");
+         FILE * fd = fopen(pidfile,"w");
          if (fd)
          {
+            char pidstr[14];
             sprintf(pidstr,"%i",(int)pid);
             fwrite(pidstr,strlen(pidstr),1,fd);
             fclose(fd);
@@ -365,36 +438,62 @@ static int Daemonize(const char * pidfile)
          if (G_SlpdCommandLine.detach)
             exit(0);
          break;
+      }
    }
 
-   close(0); 
-   close(1); 
-   close(2); 
-   setsid(); /* will only fail if we are already the process group leader */
+   /* Change directory, close files, reset umask, detach from
+      console, and (maybe) drop permissions if daemonizing (-d) */
 
+   if (G_SlpdCommandLine.detach)
+   {
+      int i;
+
+      /* change directory to root */
+      (void)chdir("/");
+
+      /* close all open file handles */
+      for (i = 0; i < 8192; i++)
+         close(i);
+
+      umask(0); /* change file file mode mask */
+      setsid(); /* create a new sid for the child process */
+
+   }
+   return 0;
+}
+
+/** Drop privileges to reduce security risk.
+ *
+ * @return Zero on success, or a non-zero value if slpd could not daemonize
+ *    (or if slpd is already running).
+ *
+ * @internal
+ */
+static int DropPrivileges()
+{
+#ifndef SETUIDS
    /* suid to daemon */
+
    /* TODO: why do the following lines mess up my signal handlers? */
-   
-   /*IPv6 Operation requires that the process owner has permissons to 
-     open multicast sockets under IPv6, this process owner is 'daemon'. 
-     As a quick workaround for correct IPv6 operation, to run this 
-     process as root, define SETUIDS.  */
-    /*TODO: warn if 'daemon' user has insufficient privileges and ipv6 requested.*/
-    /*TODO: allow different user to be specified as process owner. */
-#ifndef SETUIDS 
-   pwent = getpwnam("daemon"); 
+
+   /* IPv6 Operation requires that the process owner has permissons to
+      open multicast sockets under IPv6, this process owner is 'daemon'.
+      As a quick workaround for correct IPv6 operation, to run this
+      process as root, define SETUIDS. */
+
+   /* TODO: warn if 'daemon' user has insufficient privileges and ipv6 requested.*/
+   /* TODO: allow different user to be specified as process owner. */
+
+   struct passwd * pwent = getpwnam("daemon");
    if (pwent)
    {
-      if (setgroups(1, &pwent->pw_gid) < 0 ||   setgid(pwent->pw_gid) < 0 
+      if (setgroups(1, &pwent->pw_gid) < 0 || setgid(pwent->pw_gid) < 0
             || setuid(pwent->pw_uid) < 0)
       {
          /* TODO: should we log here and return fail */
       }
    }
 #endif
-   /* Set cwd to / (root)*/
-   chdir("/");
-
    return 0;
 }
 
@@ -450,6 +549,7 @@ static int SetUpSignalHandlers(void)
    int result;
    struct sigaction sa;
 
+   memset(&sa, 0, sizeof(struct sigaction));
    sa.sa_handler = SignalHandler;
    sigemptyset(&sa.sa_mask);
    sa.sa_flags = 0; /* SA_ONESHOT; */
@@ -484,16 +584,18 @@ static int SetUpSignalHandlers(void)
  */
 int main(int argc, char * argv[])
 {
-   fd_set readfds;
-   fd_set writefds;
-   int highfd;
+   SLPD_fdset fdset;
    int fdcount = 0;
    time_t curtime;
+#if !HAVE_POLL
    struct timeval timeout;
+#endif
 
 #ifdef DEBUG
    xmalloc_init("/var/log/slpd_xmalloc.log", 0);
 #endif
+
+   SLPD_fdset_init(&fdset);
 
    /* Parse the command line */
    if (SLPDParseCommandLine(argc,argv))
@@ -512,6 +614,10 @@ int main(int argc, char * argv[])
       overwritten or appended.*/
    if (SLPDPropertyInit(G_SlpdCommandLine.cfgfile))
       SLPDFatal("slpd initialization failed during property load\n");
+
+   /* make slpd run as a daemon */
+   if (Daemonize(G_SlpdCommandLine.pidfile))
+      SLPDFatal("Could not daemonize\n");
 
    /* initialize the log file */
    if (SLPDLogFileOpen(G_SlpdCommandLine.logfile, G_SlpdProperty.appendLog))
@@ -537,19 +643,19 @@ int main(int argc, char * argv[])
    if (
 #ifdef ENABLE_SLPv2_SECURITY
          SLPDSpiInit(G_SlpdCommandLine.spifile) ||
-#endif     
+#endif
          SLPDDatabaseInit(G_SlpdCommandLine.regfile)
-         || SLPDIncomingInit() 
-         || SLPDOutgoingInit() 
+         || SLPDIncomingInit()
+         || SLPDOutgoingInit()
          || SLPDKnownDAInit())
       SLPDFatal("slpd initialization failed\n");
    SLPDLog("Agent Interfaces = %s\n", G_SlpdProperty.interfaces);
    if (G_SlpdProperty.port != SLP_RESERVED_PORT)
       SLPDLog("Using port %d instead of default %d\n", G_SlpdProperty.port, SLP_RESERVED_PORT);
 
-   /* make slpd run as a daemon */
-   if (Daemonize(G_SlpdCommandLine.pidfile))
-      SLPDFatal("Could not daemonize\n");
+   /* drop privileges to reduce security risk */
+   if (DropPrivileges())
+      SLPDFatal("Could not drop privileges\n");
 
    /* Setup signal handlers */
    if (SetUpSignalHandlers())
@@ -562,34 +668,36 @@ int main(int argc, char * argv[])
    SLPDLog("Startup complete entering main run loop ...\n\n");
    G_SIGALRM   = 0;
    G_SIGTERM   = 0;
-   G_SIGHUP    = 0;    
+   G_SIGHUP    = 0;
 #ifdef DEBUG
    G_SIGINT    = 0;
-   G_SIGUSR1   = 0;    
+   G_SIGUSR1   = 0;
 #endif
 
    while (G_SIGTERM == 0)
    {
       /* load the fdsets up with all valid sockets in the list  */
-      highfd = 0;
-      FD_ZERO(&readfds);
-      FD_ZERO(&writefds);
-      LoadFdSets(&G_IncomingSocketList, &highfd, &readfds, &writefds);
-      LoadFdSets(&G_OutgoingSocketList, &highfd, &readfds, &writefds);
+      SLPD_fdset_reset(&fdset);
+      LoadFdSets(&G_IncomingSocketList, &fdset);
+      LoadFdSets(&G_OutgoingSocketList, &fdset);
 
       /* before select(), check to see if we got a signal */
       if (G_SIGALRM || G_SIGHUP)
          goto HANDLE_SIGNAL;
 
       /* main select -- we time out every second so the outgoing retries can occur*/
-      time(&curtime);  
+      time(&curtime);
+#if HAVE_POLL
+      fdcount = poll(fdset.fds, fdset.used, 1000);
+#else
       timeout.tv_sec = 1;
       timeout.tv_usec = 0;
-      fdcount = select(highfd + 1, &readfds, &writefds, 0, &timeout);
+      fdcount = select(fdset.highfd + 1, &fdset.readfds, &fdset.writefds, 0, &timeout);
+#endif
       if (fdcount > 0) /* fdcount will be < 0 when interrupted by a signal */
       {
-         SLPDIncomingHandler(&fdcount, &readfds, &writefds);
-         SLPDOutgoingHandler(&fdcount, &readfds, &writefds);
+         SLPDIncomingHandler(&fdcount, &fdset);
+         SLPDOutgoingHandler(&fdcount, &fdset);
          SLPDOutgoingRetry(time(0) - curtime);
       }
       else if (fdcount == 0)
@@ -615,7 +723,7 @@ HANDLE_SIGNAL:
       {
          HandleSigInt();
          G_SIGINT = 0;
-      }        
+      }
 
       if (G_SIGUSR1)
       {

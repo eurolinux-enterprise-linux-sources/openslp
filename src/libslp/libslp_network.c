@@ -32,7 +32,7 @@
 
 /** Networking routines.
  *
- * Implementation for functions that are related to INTERNAL library 
+ * Implementation for functions that are related to INTERNAL library
  * network (and ipc) communication.
  *
  * @file       libslp_network.c
@@ -48,15 +48,41 @@
 #include "slp_network.h"
 #include "slp_iface.h"
 #include "slp_message.h"
+#include "slp_v1message.h"
 #include "slp_compare.h"
 #include "slp_xmalloc.h"
 #include "slp_xcast.h"
 #include "slp_socket.h"
 
+/*Maximum MTU value that can be specified in config. See getmtu() */
+#define MAX_MTU 65535
+
+/** Obtains the MTU value to be used from configuration.
+ *
+ * The maximum transmission unit size that is specified in configuration
+ * determines many other parameter sizings.  This routines checks the
+ * value for reasonability (against MAX_MTU) and either fails (debug)
+ * or caps the value at MAX_MTU to enhance stability.
+ *
+ * @return The MTU use size from config.
+ *
+ * @internal
+ */
+static size_t getmtu(void)
+{
+   size_t mtu = SLPPropertyGetMTU();
+   SLP_ASSERT(mtu <= MAX_MTU); /*Fail in debug*/
+   if (mtu > MAX_MTU)          /*Cap in non debug*/
+   {
+      mtu = MAX_MTU;
+   }
+   return mtu;
+}
+
 #ifdef _WIN32
 
 #define DELTA_EPOCH_IN_MICROSECS  11644473600000000ULL
-struct timezone 
+struct timezone
 {
   int  tz_minuteswest; /* minutes W of Greenwich */
   int  tz_dsttime;     /* type of dst correction */
@@ -76,22 +102,22 @@ int gettimeofday(struct timeval *tv, struct timezone *tz)
   FILETIME ft;
   unsigned __int64 tmpres = 0;
   static int tzflag;
- 
+
   if (NULL != tv)
   {
     GetSystemTimeAsFileTime(&ft);
- 
+
     tmpres |= ft.dwHighDateTime;
     tmpres <<= 32;
     tmpres |= ft.dwLowDateTime;
- 
+
     /*converting file time to unix epoch*/
-    tmpres -= DELTA_EPOCH_IN_MICROSECS; 
+    tmpres -= DELTA_EPOCH_IN_MICROSECS;
     tmpres /= 10;  /*convert into microseconds*/
     tv->tv_sec = (long)(tmpres / 1000000UL);
     tv->tv_usec = (long)(tmpres % 1000000UL);
   }
- 
+
   if (NULL != tz)
   {
     if (!tzflag)
@@ -102,7 +128,7 @@ int gettimeofday(struct timeval *tv, struct timezone *tz)
     tz->tz_minuteswest = _timezone / 60;
     tz->tz_dsttime = _daylight;
   }
- 
+
   return 0;
 }
 #endif
@@ -147,6 +173,56 @@ void timeval_add(struct timeval *lhs, struct timeval *rhs)
     }
 }
 
+/** Returns the appropriate buffer size for the various RequestReply functions
+ *
+ * @param[in] v1 - Whether or not this is a SLPv1 packet
+ * @param[in] buftype - The message type
+ * @param[in] langsize - the language tag size
+ * @param[in] prlistlen - the current size of the prlist, only used for appropriate buftypes
+ * @param[in] bufsize - The size of the message
+ *
+ * @return the size
+ */
+size_t CalcBufferSize(int v1, char buftype, size_t langsize, size_t prlistlen, size_t bufsize)
+{
+   size_t size = 0;
+
+   if(v1)
+   {
+      /*  1  Version
+        + 1  Function-ID
+        + 2  Length
+        + 1  Flags/Reserved
+        + 1  Dialect
+        + 2  Language Code
+        + 2  Char Encoding
+        + 2  XID                  */
+      size =  12;
+   }
+   else
+   {
+      /*  1  Version
+        + 1  Function-ID
+        + 3  Length
+        + 2  Flags
+        + 3  Extension Offset
+        + 2  XID
+        + 2  Lang Tag Len   */
+      size = 14 + langsize;
+   }
+
+   size += bufsize;
+
+   if (buftype == SLP_FUNCT_SRVRQST
+         || buftype == SLP_FUNCT_ATTRRQST
+         || buftype == SLP_FUNCT_SRVTYPERQST)
+   {
+         size += (2 + prlistlen); /* <PRList> Len/String  */
+   }
+
+   return size;
+}
+
 #if !defined(MI_NOT_SUPPORTED)
 
 /** Returns all multi-cast addresses to which a message type can be sent.
@@ -156,8 +232,8 @@ void timeval_add(struct timeval *lhs, struct timeval *rhs)
  * order that they should be consumed (according to policy).
  *
  * @param[in] msgtype - The function-id to use in the SLPMessage header
- * @param[in] msg - A pointer to the portion of the SLP message to send. 
- *    The portion to that should be pointed to is everything after the 
+ * @param[in] msg - A pointer to the portion of the SLP message to send.
+ *    The portion to that should be pointed to is everything after the
  *    pr-list. Only needed for Service Requests. Set to NULL if not needed.
  * @param[out] ifaceinfo - The interface to send the msg to.
  *
@@ -165,7 +241,7 @@ void timeval_add(struct timeval *lhs, struct timeval *rhs)
  *
  * @internal
  */
-static int NetworkGetMcastAddrs(const char msgtype, uint8_t * msg, 
+static int NetworkGetMcastAddrs(const char msgtype, uint8_t * msg,
       SLPIfaceInfo * ifaceinfo)
 {
    uint16_t port;
@@ -175,35 +251,35 @@ static int NetworkGetMcastAddrs(const char msgtype, uint8_t * msg,
 
    port = (uint16_t)SLPPropertyAsInteger("net.slp.port");
    ifaceinfo->bcast_count = ifaceinfo->iface_count = 0;
-   switch (msgtype) 
+   switch (msgtype)
    {
       case SLP_FUNCT_SRVRQST:
          if (!msg)
             return SLP_PARAMETER_BAD;
-         if (SLPNetIsIPV6()) 
+         if (SLPNetIsIPV6())
          {
             uint16_t srvtype_len = GetUINT16(&msg);
             const char * srvtype = GetStrPtr(&msg, srvtype_len);
             /* Add IPv6 multicast groups in order they should appear. */
-            SLPNetGetSrvMcastAddr(srvtype, srvtype_len, SLP_SCOPE_NODE_LOCAL, 
+            SLPNetGetSrvMcastAddr(srvtype, srvtype_len, SLP_SCOPE_NODE_LOCAL,
                   &ifaceinfo->iface_addr[ifaceinfo->iface_count++]);
-            SLPNetGetSrvMcastAddr(srvtype, srvtype_len, SLP_SCOPE_LINK_LOCAL, 
+            SLPNetGetSrvMcastAddr(srvtype, srvtype_len, SLP_SCOPE_LINK_LOCAL,
                   &ifaceinfo->iface_addr[ifaceinfo->iface_count++]);
-            SLPNetGetSrvMcastAddr(srvtype, srvtype_len, SLP_SCOPE_SITE_LOCAL, 
+            SLPNetGetSrvMcastAddr(srvtype, srvtype_len, SLP_SCOPE_SITE_LOCAL,
                   &ifaceinfo->iface_addr[ifaceinfo->iface_count++]);
          }
-         if (SLPNetIsIPV4()) 
+         if (SLPNetIsIPV4())
          {
             struct in_addr mcastaddr;
             mcastaddr.s_addr = SLP_MCAST_ADDRESS;
-            SLPNetSetAddr(&ifaceinfo->iface_addr[ifaceinfo->iface_count], 
+            SLPNetSetAddr(&ifaceinfo->iface_addr[ifaceinfo->iface_count],
                   AF_INET, port, &mcastaddr);
             ifaceinfo->iface_count++;
          }
          break;
 
       case SLP_FUNCT_ATTRRQST:
-         if (SLPNetIsIPV6()) 
+         if (SLPNetIsIPV6())
          {
             /* Add IPv6 multicast groups in order they should appear. */
             SLPNetSetAddr(&ifaceinfo->iface_addr[ifaceinfo->iface_count],
@@ -216,18 +292,18 @@ static int NetworkGetMcastAddrs(const char msgtype, uint8_t * msg,
                   AF_INET6, port, &in6addr_srvloc_site);
             ifaceinfo->iface_count++;
          }
-         if (SLPNetIsIPV4()) 
+         if (SLPNetIsIPV4())
          {
             struct in_addr mcastaddr;
             mcastaddr.s_addr = SLP_MCAST_ADDRESS;
-            SLPNetSetAddr(&ifaceinfo->iface_addr[ifaceinfo->iface_count], 
+            SLPNetSetAddr(&ifaceinfo->iface_addr[ifaceinfo->iface_count],
                   AF_INET, port, &mcastaddr);
             ifaceinfo->iface_count++;
          }
          break;
 
       case SLP_FUNCT_SRVTYPERQST:
-         if (SLPNetIsIPV6()) 
+         if (SLPNetIsIPV6())
          {
             /* Add IPv6 multicast groups in order they should appear. */
             SLPNetSetAddr(&ifaceinfo->iface_addr[ifaceinfo->iface_count],
@@ -240,18 +316,18 @@ static int NetworkGetMcastAddrs(const char msgtype, uint8_t * msg,
                   AF_INET6, port, &in6addr_srvloc_site);
             ifaceinfo->iface_count++;
          }
-         if (SLPNetIsIPV4()) 
+         if (SLPNetIsIPV4())
          {
             struct in_addr mcastaddr;
             mcastaddr.s_addr = SLP_MCAST_ADDRESS;
-            SLPNetSetAddr(&ifaceinfo->iface_addr[ifaceinfo->iface_count], 
+            SLPNetSetAddr(&ifaceinfo->iface_addr[ifaceinfo->iface_count],
                   AF_INET, port, &mcastaddr);
             ifaceinfo->iface_count++;
          }
          break;
 
       case SLP_FUNCT_DASRVRQST:
-         if (SLPNetIsIPV6()) 
+         if (SLPNetIsIPV6())
          {
             /* Add IPv6 multicast groups in order they should appear. */
             SLPNetSetAddr(&ifaceinfo->iface_addr[ifaceinfo->iface_count],
@@ -264,11 +340,11 @@ static int NetworkGetMcastAddrs(const char msgtype, uint8_t * msg,
                   AF_INET6, port, &in6addr_srvlocda_site);
             ifaceinfo->iface_count++;
          }
-         if (SLPNetIsIPV4()) 
+         if (SLPNetIsIPV4())
          {
             struct in_addr mcastaddr;
             mcastaddr.s_addr = SLP_MCAST_ADDRESS;
-            SLPNetSetAddr(&ifaceinfo->iface_addr[ifaceinfo->iface_count], 
+            SLPNetSetAddr(&ifaceinfo->iface_addr[ifaceinfo->iface_count],
                   AF_INET, port, &mcastaddr);
             ifaceinfo->iface_count++;
          }
@@ -278,15 +354,15 @@ static int NetworkGetMcastAddrs(const char msgtype, uint8_t * msg,
          return SLP_PARAMETER_BAD;
    }
    return SLP_OK;
-}     
+}
 
 #endif   /* ! MI_NOT_SUPPORTED */
 
 /** Connects to slpd and provides a peeraddr to send to.
  *
- * @param[out] peeraddr - The address of storage for the connected 
+ * @param[out] peeraddr - The address of storage for the connected
  *    DA's address.
- * @param[in,out] peeraddrsz - The size in bytes of @p peeraddr on 
+ * @param[in,out] peeraddrsz - The size in bytes of @p peeraddr on
  *    entry; the size of the address stored in @p peeraddr on exit.
  *
  * @return The connected socket, or -1 if no DA connection can be made.
@@ -299,19 +375,59 @@ sockfd_t NetworkConnectToSlpd(void * peeraddr)
      They don't have to, since all code that calls this function eventually
     does a NetworkRqstRply, which has retry logic for the datagram case*/
 
-   if (SLPNetIsIPV6()) 
-      if (!SLPNetSetAddr(peeraddr, AF_INET6, (uint16_t)SLPPropertyAsInteger("net.slp.port"), 
+   if (SLPNetIsIPV6())
+      if (!SLPNetSetAddr(peeraddr, AF_INET6, (uint16_t)SLPPropertyAsInteger("net.slp.port"),
             &slp_in6addr_loopback))
          sock = SLPNetworkCreateDatagram(AF_INET6);
 
-   if (sock == SLP_INVALID_SOCKET && SLPNetIsIPV4()) 
+   if (sock == SLP_INVALID_SOCKET && SLPNetIsIPV4())
    {
       int tempAddr = INADDR_LOOPBACK;
-      if (SLPNetSetAddr(peeraddr, AF_INET, 
+      if (SLPNetSetAddr(peeraddr, AF_INET,
             (uint16_t)SLPPropertyAsInteger("net.slp.port"), &tempAddr) == 0)
          sock = SLPNetworkCreateDatagram(AF_INET);
    }
    return sock;
+}
+
+/** Check if the socket is still alive - the server may have closed it.
+ *
+ * @param[in] fd - The socket decriptor to check.
+ *
+ * @return SLP_OK if socket is still alive; SLP_NETWORK_ERROR if not.
+ */
+static SLPError NetworkCheckConnection(sockfd_t fd)
+{
+   int r;
+#ifdef HAVE_POLL
+    struct pollfd readfd;
+#else
+    fd_set readfd;
+    struct timeval tv;
+#endif
+
+#ifdef HAVE_POLL
+    readfd.fd = fd;
+    readfd.events = POLLIN;
+    while ((r = poll(&readfd, 1, 0)) == -1 && errno == EINTR)
+        ;
+#else
+   FD_ZERO(&readfd);
+   FD_SET(fd, &readfd);
+   tv.tv_sec = 0;
+   tv.tv_usec = 0;
+   while ((r = select((int)(fd + 1), &readfd, 0, 0, &tv)) == -1)
+   {
+#ifdef _WIN32
+     if (WSAGetLastError() != WSAEINTR)
+#else
+     if (errno != EINTR)
+#endif
+        break;
+   }
+#endif
+   /* r == 0 means timeout, everything else is an error */
+   return r == 0 ? SLP_OK : SLP_NETWORK_ERROR;
 }
 
 /** Disconnect from the connected DA.
@@ -322,7 +438,7 @@ sockfd_t NetworkConnectToSlpd(void * peeraddr)
  */
 void NetworkDisconnectDA(SLPHandleInfo * handle)
 {
-   if (handle->dasock)
+   if (handle->dasock != SLP_INVALID_SOCKET)
    {
       closesocket(handle->dasock);
       handle->dasock = SLP_INVALID_SOCKET;
@@ -338,7 +454,7 @@ void NetworkDisconnectDA(SLPHandleInfo * handle)
  */
 void NetworkDisconnectSA(SLPHandleInfo * handle)
 {
-   if (handle->sasock)
+   if (handle->sasock != SLP_INVALID_SOCKET)
    {
       closesocket(handle->sasock);
       handle->sasock = SLP_INVALID_SOCKET;
@@ -348,24 +464,25 @@ void NetworkDisconnectSA(SLPHandleInfo * handle)
 /** Connects to slpd and provides a peeraddr to send to
  *
  * @param[in] handle - The SLP handle containing the socket to close.
- * @param[in] scopelist - The scope that must be supported by DA. Pass 
+ * @param[in] scopelist - The scope that must be supported by DA. Pass
  *    in NULL for any scope
  * @param[in] scopelistlen - The length of @p scopelist. Ignored if
  *    @p scopelist is NULL.
- * @param[out] peeraddr - The address of storage to receive the connected 
+ * @param[out] peeraddr - The address of storage to receive the connected
  *    DA's address.
  *
  * @return The connected socket, or -1 if no DA connection can be made.
- */ 
+ */
 sockfd_t NetworkConnectToDA(SLPHandleInfo * handle, const char * scopelist,
       size_t scopelistlen, void * peeraddr)
 {
    /* Attempt to use a cached socket if scope is supported otherwise
     * discover a DA that supports the scope.
     */
-   if (handle->dasock != SLP_INVALID_SOCKET && handle->dascope != 0 
-         && SLPCompareString(handle->dascopelen, handle->dascope, 
-               scopelistlen, scopelist) == 0)
+   if (handle->dasock != SLP_INVALID_SOCKET && handle->dascope != 0
+         && SLPSubsetStringList(handle->dascopelen, handle->dascope,
+               scopelistlen, scopelist) != 0
+         && NetworkCheckConnection(handle->dasock) == SLP_OK)
       memcpy(peeraddr, &handle->daaddr, sizeof(struct sockaddr_storage));
    else
    {
@@ -374,13 +491,13 @@ sockfd_t NetworkConnectToDA(SLPHandleInfo * handle, const char * scopelist,
          closesocket(handle->dasock);
 
       /* Attempt to connect to DA that does support the scope. */
-      handle->dasock = KnownDAConnect(handle, scopelistlen, scopelist, 
+      handle->dasock = KnownDAConnect(handle, scopelistlen, scopelist,
             &handle->daaddr);
       if (handle->dasock != SLP_INVALID_SOCKET)
       {
          xfree(handle->dascope);
          handle->dascope = xmemdup(scopelist, scopelistlen);
-         handle->dascopelen = scopelistlen; 
+         handle->dascopelen = scopelistlen;
          memcpy(peeraddr, &handle->daaddr, sizeof(struct sockaddr_storage));
       }
    }
@@ -390,29 +507,30 @@ sockfd_t NetworkConnectToDA(SLPHandleInfo * handle, const char * scopelist,
 /** Connects to slpd and provides a network address to send to.
  *
  * This routine attempts to use a cached socket if the cached socket supports
- * one of the scopes specified in @p scopelist, otherwise it attempts to 
- * connect to the local Service Agent, or a DA that supports the scope, in 
+ * one of the scopes specified in @p scopelist, otherwise it attempts to
+ * connect to the local Service Agent, or a DA that supports the scope, in
  * order to register directly, if no local SA is present.
  *
  * @param[in] handle - SLPHandle info (caches connection info).
- * @param[in] scopelist - Scope that must be supported by SA. Pass in 
+ * @param[in] scopelist - Scope that must be supported by SA. Pass in
  *    NULL for any scope.
  * @param[in] scopelistlen - The length of @p scopelist in bytes.
  *    Ignored if @p scopelist is NULL.
- * @param[out] saaddr - The address of storage to receive the connected 
+ * @param[out] saaddr - The address of storage to receive the connected
  *    SA's address.
  *
  * @return The connected socket, or -1 if no SA connection can be made.
  *
- * @note The memory pointed to by @p saaddr must at least as large as a 
+ * @note The memory pointed to by @p saaddr must at least as large as a
  * sockaddr_storage buffer.
- */ 
+ */
 sockfd_t NetworkConnectToSA(SLPHandleInfo * handle, const char * scopelist,
       size_t scopelistlen, void * saaddr)
 {
-   if (handle->sasock != SLP_INVALID_SOCKET && handle->sascope != 0 
-         && SLPCompareString(handle->sascopelen, handle->sascope,
-               scopelistlen, scopelist) == 0)
+   if (handle->sasock != SLP_INVALID_SOCKET && handle->sascope != 0
+         && SLPSubsetStringList(handle->sascopelen, handle->sascope,
+               scopelistlen, scopelist) != 0
+         && NetworkCheckConnection(handle->sasock) == SLP_OK)
       memcpy(saaddr, &handle->saaddr, sizeof(handle->saaddr));
    else
    {
@@ -428,7 +546,7 @@ sockfd_t NetworkConnectToSA(SLPHandleInfo * handle, const char * scopelist,
       {
          xfree(handle->sascope);
          handle->sascope = xmemdup(scopelist, scopelistlen);
-         handle->sascopelen = scopelistlen; 
+         handle->sascopelen = scopelistlen;
          memcpy(saaddr, &handle->saaddr, sizeof(handle->saaddr));
       }
    }
@@ -446,15 +564,17 @@ sockfd_t NetworkConnectToSA(SLPHandleInfo * handle, const char * scopelist,
  * @param[in] bufsize - The size of @p buf.
  * @param[in] callback - The user callback to call with response data.
  * @param[in] cookie - A pass through value from the caller to @p callback.
+ * @param[in] isV1 - Whether or not to use a V1 header.
  *
  * @return SLP_OK on success, or an SLP error code on failure.
- */ 
-SLPError NetworkRqstRply(sockfd_t sock, void * peeraddr, 
+ */
+SLPError NetworkRqstRply(sockfd_t sock, void * peeraddr,
       const char * langtag, size_t extoffset, void * buf, char buftype,
-      size_t bufsize, NetworkRplyCallback callback, void * cookie)
+      size_t bufsize, NetworkRplyCallback callback, void * cookie, int isV1)
 {
    char * prlist = 0;
    unsigned short flags;
+   char v1flags;
 
    size_t mtu = 0;
    size_t prlistlen = 0;
@@ -480,7 +600,7 @@ SLPError NetworkRqstRply(sockfd_t sock, void * peeraddr,
    {
       /* Multicast or broadcast target address. */
       maxwait = SLPPropertyAsInteger("net.slp.multicastMaximumWait");
-      SLPPropertyAsIntegerVector("net.slp.multicastTimeouts", 
+      SLPPropertyAsIntegerVector("net.slp.multicastTimeouts",
             timeouts, MAX_RETRANSMITS);
       xmitcount = 0;          /* Only retry to specific listeners. */
       looprecv = 1;
@@ -514,7 +634,7 @@ SLPError NetworkRqstRply(sockfd_t sock, void * peeraddr,
    {
       /* do something special for SRVRQST that will be discovering DAs */
       maxwait = SLPPropertyAsInteger("net.slp.DADiscoveryMaximumWait");
-      SLPPropertyAsIntegerVector("net.slp.DADiscoveryTimeouts", 
+      SLPPropertyAsIntegerVector("net.slp.DADiscoveryTimeouts",
             timeouts, MAX_RETRANSMITS);
       /* DASRVRQST is a fake function - change to SRVRQST. */
       buftype  = SLP_FUNCT_SRVRQST;
@@ -522,15 +642,15 @@ SLPError NetworkRqstRply(sockfd_t sock, void * peeraddr,
       stoploopifrecv = 0;  /* These replies are separate datagram responses. */
    }
 
-   /* Allocate memory for the prlist on datagram sockets for appropriate 
+   /* Allocate memory for the prlist on datagram sockets for appropriate
     * messages. Note that the prlist is as large as the MTU -- thus assuring
-    * that there will not be any buffer overwrites regardless of how many 
-    * previous responders there are. This is because the retransmit code 
-    * terminates if ever MTU is exceeded for any datagram message. 
+    * that there will not be any buffer overwrites regardless of how many
+    * previous responders there are. This is because the retransmit code
+    * terminates if ever MTU is exceeded for any datagram message.
     */
-   mtu = SLPPropertyGetMTU();
-   if (buftype == SLP_FUNCT_SRVRQST 
-         || buftype == SLP_FUNCT_ATTRRQST 
+   mtu = getmtu();
+   if (buftype == SLP_FUNCT_SRVRQST
+         || buftype == SLP_FUNCT_ATTRRQST
          || buftype == SLP_FUNCT_SRVTYPERQST)
    {
       prlist = (char *)xmalloc(mtu);
@@ -540,7 +660,7 @@ SLPError NetworkRqstRply(sockfd_t sock, void * peeraddr,
          goto CLEANUP;
       }
       *prlist = 0;
-      prlistlen = 0; 
+      prlistlen = 0;
    }
 
    /* ----- Main Retransmission Loop ----- */
@@ -549,7 +669,7 @@ SLPError NetworkRqstRply(sockfd_t sock, void * peeraddr,
       size_t size;
       struct timeval timeout;
       result = SLP_OK;
-      
+
       /* Setup receive timeout. */
       if (socktype == SOCK_DGRAM)
       {
@@ -573,42 +693,7 @@ SLPError NetworkRqstRply(sockfd_t sock, void * peeraddr,
          timeout.tv_usec = (maxwait % 1000) * 1000;
       }
 
-   /*  0                   1                   2                   3
-       0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-      |    Version    |  Function-ID  |            Length             |
-      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-      | Length, contd.|O|F|R|       reserved          |Next Ext Offset|
-      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-      |  Next Extension Offset, contd.|              XID              |
-      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-      |      Language Tag Length      |         Language Tag          \
-      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+ */
-
-      /* Calculate the (new) size of the send buffer. */
-      size = (int)(
-            + 1               /* Version              */
-            + 1               /* Function-ID          */
-            + 3               /* Length               */
-            + 2               /* Flags                */
-            + 3               /* Extension Offset     */
-            + 2               /* XID                  */
-            + 2 + langtaglen  /* Lang Tag Len/Value   */
-            + bufsize);       /* Message              */
-   
-      if (buftype == SLP_FUNCT_SRVRQST 
-            || buftype == SLP_FUNCT_ATTRRQST 
-            || buftype == SLP_FUNCT_SRVTYPERQST)
-      {
-      /*  0                   1                   2                   3
-         0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-         +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-         |      length of <PRList>       |        <PRList> String        \
-         +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+ */
-
-         size += (int)(
-               + 2 + prlistlen); /* <PRList> Len/String  */
-      }
+      size = CalcBufferSize(isV1, buftype, langtaglen, prlistlen, bufsize);
 
       /* Ensure the send buffer size does not exceed MTU for datagrams. */
       if (socktype == SOCK_DGRAM && size > mtu)
@@ -627,42 +712,81 @@ SLPError NetworkRqstRply(sockfd_t sock, void * peeraddr,
       xmitcount++;
 
       /* -- Begin SLP Header -- */
+      if(isV1)
+      {
+         /* Version */
+         *sendbuf->curpos++ = 1;
 
-      /* Version */
-      *sendbuf->curpos++ = 2;
+         /* Function-ID */
+         *sendbuf->curpos++ = buftype;
 
-      /* Function-ID */
-      *sendbuf->curpos++ = buftype;
+         /* Length */
+         PutUINT16(&sendbuf->curpos, size);
 
-      /* Length */
-      PutUINT24(&sendbuf->curpos, size);
+         /* flags */
+         v1flags = 0;
+         if (buftype == SLP_FUNCT_SRVREG)
+            v1flags |= SLPv1_FLAG_FRESH;
+         *sendbuf->curpos++ = v1flags;
 
-      /* Flags */
-      flags = (SLPNetIsMCast(peeraddr)? SLP_FLAG_MCAST : 0);
-      if (buftype == SLP_FUNCT_SRVREG)
-         flags |= SLP_FLAG_FRESH;
-      PutUINT16(&sendbuf->curpos, flags);
+         /* dialect */
+         *sendbuf->curpos++ = 0;
 
-      /* Extension Offset - TRICKY: The extoffset was passed into us 
-       * relative to the start of the user's message, not the SLP header. 
-       * We need to fix up the offset to be relative to the beginning of 
-       * the SLP message.
-       */
-      if (extoffset != 0)
-         PutUINT24(&sendbuf->curpos, extoffset + langtaglen + 14);
+         /* Language code.  For now, we'll take the first two bytes of the tag */
+         if(langtaglen < 2)
+         {
+            *sendbuf->curpos++ = 'e';
+            *sendbuf->curpos++ = 'n';
+         }
+         else
+         {
+            *sendbuf->curpos++ = langtag[0];
+            *sendbuf->curpos++ = langtag[1];
+         }
+
+         /* Character encoding -- assume UTF8 */
+         PutUINT16(&sendbuf->curpos, SLP_CHAR_UTF8);
+
+         /* XID */
+         PutUINT16(&sendbuf->curpos, xid);
+      }
       else
-         PutUINT24(&sendbuf->curpos, 0);
+      {
+         /* Version */
+         *sendbuf->curpos++ = 2;
 
-      /* XID */
-      PutUINT16(&sendbuf->curpos, xid);
+         /* Function-ID */
+         *sendbuf->curpos++ = buftype;
 
-      /* Language Tag Length */
-      PutUINT16(&sendbuf->curpos, langtaglen);
+         /* Length */
+         PutUINT24(&sendbuf->curpos, size);
 
-      /* Language Tag */
-      memcpy(sendbuf->curpos, langtag, langtaglen);
-      sendbuf->curpos += langtaglen;
+         /* Flags */
+         flags = (SLPNetIsMCast(peeraddr)? SLP_FLAG_MCAST : 0);
+         if (buftype == SLP_FUNCT_SRVREG)
+            flags |= SLP_FLAG_FRESH;
+         PutUINT16(&sendbuf->curpos, flags);
 
+         /* Extension Offset - TRICKY: The extoffset was passed into us
+          * relative to the start of the user's message, not the SLP header.
+          * We need to fix up the offset to be relative to the beginning of
+          * the SLP message.
+          */
+         if (extoffset != 0)
+            PutUINT24(&sendbuf->curpos, extoffset + langtaglen + 14);
+         else
+            PutUINT24(&sendbuf->curpos, 0);
+
+         /* XID */
+         PutUINT16(&sendbuf->curpos, xid);
+
+         /* Language Tag Length */
+         PutUINT16(&sendbuf->curpos, langtaglen);
+
+         /* Language Tag */
+         memcpy(sendbuf->curpos, langtag, langtaglen);
+         sendbuf->curpos += langtaglen;
+      }
       /* -- End SLP Header -- */
 
       /* -- Begin SLP Message -- */
@@ -684,14 +808,14 @@ SLPError NetworkRqstRply(sockfd_t sock, void * peeraddr,
       /* -- End SLP Message -- */
 
       /* Send the buffer. */
-      if (SLPNetworkSendMessage(sock, socktype, sendbuf, 
-            sendbuf->curpos - sendbuf->start, peeraddr, 
+      if (SLPNetworkSendMessage(sock, socktype, sendbuf,
+            sendbuf->curpos - sendbuf->start, peeraddr,
             &timeout) != 0)
       {
          if (errno == ETIMEDOUT)
             result = SLP_NETWORK_TIMED_OUT;
          else
-            result = SLP_NETWORK_ERROR;    
+            result = SLP_NETWORK_ERROR;
          goto FINISHED;
       }
 
@@ -702,7 +826,7 @@ SLPError NetworkRqstRply(sockfd_t sock, void * peeraddr,
          addr.ss_family = AF_UNSPEC;
 
          /* Receive the response. */
-         if (SLPNetworkRecvMessage(sock, socktype, &recvbuf, 
+         if (SLPNetworkRecvMessage(sock, socktype, &recvbuf,
                &addr, &timeout) != 0)
          {
             if (errno == ETIMEDOUT)
@@ -718,9 +842,9 @@ SLPError NetworkRqstRply(sockfd_t sock, void * peeraddr,
             {
                rplycount += 1;
 
-               /* Check the family type of the addr. If it is not set, 
+               /* Check the family type of the addr. If it is not set,
                 * assume the addr is the peeraddr. addr is only set on
-                * datagram sockets in the SLPNetworkRecvMessage call. 
+                * datagram sockets in the SLPNetworkRecvMessage call.
                 */
                if (addr.ss_family == AF_UNSPEC)
                   memcpy(&addr, peeraddr, sizeof(addr));
@@ -734,7 +858,7 @@ SLPError NetworkRqstRply(sockfd_t sock, void * peeraddr,
                {
                   /* Convert peeraddr to string and length. */
                   size_t addrstrlen;
-						char addrstr[INET6_ADDRSTRLEN] = "";
+                  char addrstr[INET6_ADDRSTRLEN] = "";
                   SLPNetSockAddrStorageToString(&addr,
                            addrstr, sizeof(addrstr));
                   addrstrlen = strlen(addrstr);
@@ -765,9 +889,9 @@ SLPError NetworkRqstRply(sockfd_t sock, void * peeraddr,
 FINISHED:
 
    /* Notify the callback that we're done. */
-   if (rplycount != 0 || (result == SLP_NETWORK_TIMED_OUT 
+   if (rplycount != 0 || (result == SLP_NETWORK_TIMED_OUT
          && SLPNetIsMCast(peeraddr)))
-      result = SLP_LAST_CALL; 
+      result = SLP_LAST_CALL;
 
    if(recvbuf)
       callback(result, &addr, recvbuf, cookie);
@@ -793,18 +917,19 @@ CLEANUP:
 
  * @param[in] buf - The pointer to the portion of the SLP message to
  *    send. The portion that should be pointed to is everything after
- *    the pr-list. NetworkXcastRqstRply() automatically generates the 
+ *    the pr-list. NetworkXcastRqstRply() automatically generates the
  *    header and the prlist.
  * @param[in] buftype - The function-id to use in the SLPMessage header.
  * @param[in] bufsize - The size of the buffer pointed to by buf.
  * @param[in] callback - The callback to use for reporting results.
  * @param[in] cookie - The cookie to pass to the callback.
+ * @param[in] isV1 - Whether or not to use a v1 header.
  *
  * @return SLP_OK on success. SLP_ERROR on failure.
- */ 
-SLPError NetworkMcastRqstRply(SLPHandleInfo * handle, void * buf, 
+ */
+SLPError NetworkMcastRqstRply(SLPHandleInfo * handle, void * buf,
       char buftype, size_t bufsize, NetworkRplyCallback callback,
-      void * cookie)
+      void * cookie, int isV1)
 {
    struct timeval timeout;
    struct sockaddr_storage addr;
@@ -817,7 +942,7 @@ SLPError NetworkMcastRqstRply(SLPHandleInfo * handle, void * buf,
    int size = 0;
    char * prlist = 0;
    int xid = 0;
-   int mtu = 0;
+   size_t mtu = 0;
    int xmitcount = 0;
    int rplycount = 0;
    int maxwait = 0;
@@ -828,12 +953,12 @@ SLPError NetworkMcastRqstRply(SLPHandleInfo * handle, void * buf,
    SLPIfaceInfo v4outifaceinfo;
    SLPIfaceInfo v6outifaceinfo;
    SLPXcastSockets xcastsocks;
+   int alistsize;
    int currIntf = 0;
-   int requestSent;
 
 #if defined(DEBUG)
    /* This function only supports multicast or broadcast of these messages */
-   if (buftype != SLP_FUNCT_SRVRQST && buftype != SLP_FUNCT_ATTRRQST 
+   if (buftype != SLP_FUNCT_SRVRQST && buftype != SLP_FUNCT_ATTRRQST
          && buftype != SLP_FUNCT_SRVTYPERQST && buftype != SLP_FUNCT_DASRVRQST)
       return SLP_PARAMETER_BAD;
 #endif
@@ -841,8 +966,18 @@ SLPError NetworkMcastRqstRply(SLPHandleInfo * handle, void * buf,
    /* save off a few things we don't want to recalculate */
    langtaglen = strlen(handle->langtag);
 
+   /* initialize pointers freed on error */
+   dstifaceinfo.iface_addr = NULL;
+   dstifaceinfo.bcast_addr = NULL;
+   v4outifaceinfo.iface_addr = NULL;
+   v4outifaceinfo.bcast_addr = NULL;
+   v6outifaceinfo.iface_addr = NULL;
+   v6outifaceinfo.bcast_addr = NULL;
+   xcastsocks.sock = NULL;
+   xcastsocks.peeraddr = NULL;
+
    xid = SLPXidGenerate();
-   mtu = SLPPropertyGetMTU();
+   mtu = getmtu();
    sendbuf = SLPBufferAlloc(mtu);
    if (!sendbuf)
    {
@@ -850,15 +985,66 @@ SLPError NetworkMcastRqstRply(SLPHandleInfo * handle, void * buf,
       goto FINISHED;
    }
 
+   alistsize = slp_max_ifaces * sizeof(struct sockaddr_storage);
+
+   dstifaceinfo.iface_count = 0;
+   dstifaceinfo.iface_addr = malloc(alistsize);
+   if (dstifaceinfo.iface_addr == NULL)
+   {
+      result = SLP_MEMORY_ALLOC_FAILED;
+      goto FINISHED;
+   }
+   dstifaceinfo.bcast_addr = malloc(alistsize);
+   if (dstifaceinfo.bcast_addr == NULL)
+   {
+      result = SLP_MEMORY_ALLOC_FAILED;
+      goto FINISHED;
+   }
    v4outifaceinfo.iface_count = 0;
+   v4outifaceinfo.iface_addr = malloc(alistsize);
+   if (v4outifaceinfo.iface_addr == NULL)
+   {
+      result = SLP_MEMORY_ALLOC_FAILED;
+      goto FINISHED;
+   }
+   v4outifaceinfo.bcast_addr = malloc(alistsize);
+   if (v4outifaceinfo.bcast_addr == NULL)
+   {
+      result = SLP_MEMORY_ALLOC_FAILED;
+      goto FINISHED;
+   }
    v6outifaceinfo.iface_count = 0;
+   v6outifaceinfo.iface_addr = malloc(alistsize);
+   if (v6outifaceinfo.iface_addr == NULL)
+   {
+      result = SLP_MEMORY_ALLOC_FAILED;
+      goto FINISHED;
+   }
+   v6outifaceinfo.bcast_addr = malloc(alistsize);
+   if (v6outifaceinfo.bcast_addr == NULL)
+   {
+      result = SLP_MEMORY_ALLOC_FAILED;
+      goto FINISHED;
+   }
    xcastsocks.sock_count = 0;
+   xcastsocks.sock = malloc(slp_max_ifaces * sizeof(sockfd_t));
+   if (xcastsocks.sock == NULL)
+   {
+      result = SLP_MEMORY_ALLOC_FAILED;
+      goto FINISHED;
+   }
+   xcastsocks.peeraddr = malloc(alistsize);
+   if (xcastsocks.peeraddr == NULL)
+   {
+      result = SLP_MEMORY_ALLOC_FAILED;
+      goto FINISHED;
+   }
 
 #if !defined(MI_NOT_SUPPORTED)
    /* Determine which multicast addresses to send to. */
    NetworkGetMcastAddrs(buftype, buf, &dstifaceinfo);
    /* Determine which interfaces to send out on. */
-   if(handle->McastIFList) 
+   if(handle->McastIFList)
    {
 #if defined(DEBUG)
       fprintf(stderr, "McastIFList = %s\n", handle->McastIFList);
@@ -866,7 +1052,7 @@ SLPError NetworkMcastRqstRply(SLPHandleInfo * handle, void * buf,
       SLPIfaceGetInfo(handle->McastIFList, &v4outifaceinfo, AF_INET);
       SLPIfaceGetInfo(handle->McastIFList, &v6outifaceinfo, AF_INET6);
    }
-   else 
+   else
 #endif /* MI_NOT_SUPPORTED */
 
    {
@@ -876,7 +1062,7 @@ SLPError NetworkMcastRqstRply(SLPHandleInfo * handle, void * buf,
       if (SLPNetIsIPV6())
          SLPIfaceGetInfo(iflist, &v6outifaceinfo, AF_INET6);
       xfree(iflist);
-      if (!v4outifaceinfo.iface_count && !v6outifaceinfo.iface_count) 
+      if (!v4outifaceinfo.iface_count && !v6outifaceinfo.iface_count)
       {
          result = SLP_NETWORK_ERROR;
          goto FINISHED;
@@ -905,7 +1091,7 @@ SLPError NetworkMcastRqstRply(SLPHandleInfo * handle, void * buf,
     * Notice that the prlist is as large as the MTU -- thus assuring that
     * there will not be any buffer overwrites regardless of how many
     * previous responders there are.   This is because the retransmit
-    * code terminates if ever MTU is exceeded for any datagram message. 
+    * code terminates if ever MTU is exceeded for any datagram message.
     */
    prlistsize = mtu;
    prlist = (char *)xmalloc(mtu);
@@ -915,17 +1101,16 @@ SLPError NetworkMcastRqstRply(SLPHandleInfo * handle, void * buf,
       goto FINISHED;
    }
    *prlist = 0;
-   prlistlen = 0; 
+   prlistlen = 0;
 
 #if !defined(MI_NOT_SUPPORTED)
    /* iterate through each multicast scope until we found a provider. */
-   while (currIntf < dstifaceinfo.iface_count) 
+   while (currIntf < dstifaceinfo.iface_count)
 #endif
    {
       /* main retransmission loop */
       xmitcount = 0;
       totaltimeout = 0;
-      requestSent = 0;
       while (xmitcount < MAX_RETRANSMITS)
       {
          int replies_this_period = 0;
@@ -937,14 +1122,11 @@ SLPError NetworkMcastRqstRply(SLPHandleInfo * handle, void * buf,
          timeout.tv_usec = (timeouts[xmitcount] % 1000) * 1000;
 
          /* re-allocate buffer and make sure that the send buffer does not
-          * exceed MTU for datagram transmission 
+          * exceed MTU for datagram transmission
           */
-         size = (int)(14 + langtaglen + bufsize);
-         if (buftype == SLP_FUNCT_SRVRQST || buftype == SLP_FUNCT_ATTRRQST 
-               || buftype == SLP_FUNCT_SRVTYPERQST)
-            size += (int)(2 + prlistlen); /* add in room for the prlist */
+         size = (int)CalcBufferSize(isV1, buftype, langtaglen, prlistlen, bufsize);
 
-         if (size > mtu)
+         if (size > (int)mtu)
          {
             if (!xmitcount)
                result = SLP_BUFFER_OVERFLOW;
@@ -958,31 +1140,68 @@ SLPError NetworkMcastRqstRply(SLPHandleInfo * handle, void * buf,
          xmitcount++;
 
          /* Add the header to the send buffer */
+         if(isV1)
+         {
+            /* Version */
+            *sendbuf->curpos++ = 1;
 
-         /* version */
-         *sendbuf->curpos++ = 2;
+            /* Function-ID */
+            *sendbuf->curpos++ = buftype;
 
-         /* function id */
-         *sendbuf->curpos++ = buftype;
+            /* Length */
+            PutUINT16(&sendbuf->curpos, size);
 
-         /* length */
-         PutUINT24(&sendbuf->curpos, size);
+            /* flags */
+            *sendbuf->curpos++ = 0;
 
-         /* flags */
-         PutUINT16(&sendbuf->curpos, SLP_FLAG_MCAST);
+            /* dialect */
+            *sendbuf->curpos++ = 0;
 
-         /* ext offset */
-         PutUINT24(&sendbuf->curpos, 0);
+            /* Language code.  For now, we'll take the first two bytes of the tag */
+            if(langtaglen < 2)
+            {
+               *sendbuf->curpos++ = 'e';
+               *sendbuf->curpos++ = 'n';
+            }
+            else
+            {
+               *sendbuf->curpos++ = handle->langtag[0];
+               *sendbuf->curpos++ = handle->langtag[1];
+            }
 
-         /* xid */
-         PutUINT16(&sendbuf->curpos, xid);
+            /* Character encoding -- assume UTF8 */
+            PutUINT16(&sendbuf->curpos, SLP_CHAR_UTF8);
 
-         /* lang tag len */
-         PutUINT16(&sendbuf->curpos, langtaglen);
+            /* XID */
+            PutUINT16(&sendbuf->curpos, xid);
+         }
+         else
+         {
+            /* version */
+            *sendbuf->curpos++ = 2;
 
-         /* lang tag */
-         memcpy(sendbuf->curpos, handle->langtag, langtaglen);
-         sendbuf->curpos += langtaglen;
+            /* function id */
+            *sendbuf->curpos++ = buftype;
+
+            /* length */
+            PutUINT24(&sendbuf->curpos, size);
+
+            /* flags */
+            PutUINT16(&sendbuf->curpos, SLP_FLAG_MCAST);
+
+            /* ext offset */
+            PutUINT24(&sendbuf->curpos, 0);
+
+            /* xid */
+            PutUINT16(&sendbuf->curpos, xid);
+
+            /* lang tag len */
+            PutUINT16(&sendbuf->curpos, langtaglen);
+
+            /* lang tag */
+            memcpy(sendbuf->curpos, handle->langtag, langtaglen);
+            sendbuf->curpos += langtaglen;
+         }
 
          /* Add the prlist to the send buffer */
          if (prlist)
@@ -1002,30 +1221,27 @@ SLPError NetworkMcastRqstRply(SLPHandleInfo * handle, void * buf,
          else
          {
             if (dstifaceinfo.iface_addr[currIntf].ss_family == AF_INET)
-               result = SLPMulticastSend(&v4outifaceinfo, sendbuf, &xcastsocks, 
+               result = SLPMulticastSend(&v4outifaceinfo, sendbuf, &xcastsocks,
                      &dstifaceinfo.iface_addr[currIntf]);
             else if (dstifaceinfo.iface_addr[currIntf].ss_family == AF_INET6)
-               result = SLPMulticastSend(&v6outifaceinfo, sendbuf, &xcastsocks, 
+               result = SLPMulticastSend(&v6outifaceinfo, sendbuf, &xcastsocks,
                      &dstifaceinfo.iface_addr[currIntf]);
          }
-
-         if (!result)
-            requestSent = 1;
 
          /* main recv loop */
          while(1)
          {
 #if !defined(UNICAST_NOT_SUPPORTED)
             int retval = 0;
-            if ((retval = SLPXcastRecvMessage(&xcastsocks, &recvbuf, 
-                  &addr, &timeout)) != 0)
+            if ((retval = SLPXcastRecvMessage(&xcastsocks, &recvbuf,
+                  &addr, &timeout)) != SLP_ERROR_OK)
 #else
-            if (SLPXcastRecvMessage(&xcastsocks, &recvbuf, 
-                  &addr, &timeout) != 0)
+            if (SLPXcastRecvMessage(&xcastsocks, &recvbuf,
+                  &addr, &timeout) != SLP_ERROR_OK)
 #endif
             {
                /* An error occured while receiving the message
-                * probably a just time out error. break for re-send. 
+                * probably a just time out error. break for re-send.
                 */
                if (errno == ETIMEDOUT)
                   result = SLP_NETWORK_TIMED_OUT;
@@ -1033,11 +1249,11 @@ SLPError NetworkMcastRqstRply(SLPHandleInfo * handle, void * buf,
                   result = SLP_NETWORK_ERROR;
 
 #if !defined(UNICAST_NOT_SUPPORTED)
-               /* retval == SLP_ERROR_RETRY_UNICAST signifies that we 
-                * received a multicast packet of size > MTU and hence we 
+               /* retval == SLP_ERROR_RETRY_UNICAST signifies that we
+                * received a multicast packet of size > MTU and hence we
                 * are now sending a unicast request to this IP-address.
                 */
-               if (retval == SLP_ERROR_RETRY_UNICAST) 
+               if (retval == SLP_ERROR_RETRY_UNICAST)
                {
                   sockfd_t tcpsockfd;
                   int retval1, retval2, unicastwait = 0;
@@ -1048,44 +1264,44 @@ SLPError NetworkMcastRqstRply(SLPHandleInfo * handle, void * buf,
                   timeout.tv_usec = (unicastwait % 1000) * 1000;
 
                   tcpsockfd = SLPNetworkConnectStream(&addr, &timeout);
-                  if (tcpsockfd != SLP_INVALID_SOCKET) 
+                  if (tcpsockfd != SLP_INVALID_SOCKET)
                   {
                      TO_UINT16(sendbuf->start + 5, SLP_FLAG_UCAST);
                      xid = SLPXidGenerate();
                      TO_UINT16(sendbuf->start + 10, xid);
 
-                     retval1 = SLPNetworkSendMessage(tcpsockfd, SOCK_STREAM, 
-                           sendbuf, sendbuf->curpos - sendbuf->start, &addr, 
+                     retval1 = SLPNetworkSendMessage(tcpsockfd, SOCK_STREAM,
+                           sendbuf, sendbuf->curpos - sendbuf->start, &addr,
                            &timeout);
-                     if (retval1) 
+                     if (retval1)
                      {
-                        if (errno == ETIMEDOUT) 
+                        if (errno == ETIMEDOUT)
                            result = SLP_NETWORK_TIMED_OUT;
-                        else 
+                        else
                            result = SLP_NETWORK_ERROR;
                         closesocket(tcpsockfd);
                         break;
                      }
 
-                     retval2 = SLPNetworkRecvMessage(tcpsockfd, SOCK_STREAM, 
+                     retval2 = SLPNetworkRecvMessage(tcpsockfd, SOCK_STREAM,
                            &recvbuf, &addr, &timeout);
-                     if (retval2) 
+                     if (retval2)
                      {
                         /* An error occured while receiving the message
-                         *  probably a just time out error. break for re-send. 
+                         *  probably a just time out error. break for re-send.
                          */
-                        if(errno == ETIMEDOUT) 
+                        if(errno == ETIMEDOUT)
                            result = SLP_NETWORK_TIMED_OUT;
-                        else 
+                        else
                            result = SLP_NETWORK_ERROR;
                         closesocket(tcpsockfd);
                         break;
                      }
                      closesocket(tcpsockfd);
                      result = SLP_OK;
-                     goto SNEEK;                               
-                  } 
-                  else 
+                     goto SNEEK;
+                  }
+                  else
                      break; /* Unsuccessful in opening a TCP conn - retry */
                }
                else
@@ -1099,11 +1315,11 @@ SLPError NetworkMcastRqstRply(SLPHandleInfo * handle, void * buf,
 #if !defined(UNICAST_NOT_SUPPORTED)
 SNEEK:
 #endif
-            /* Sneek in and check the XID */
+            /* Sneek in and check the XID -- it's in the same place in v1 and v2*/
             if (AS_UINT16(recvbuf->start + 10) == xid)
             {
                char addrstr[INET6_ADDRSTRLEN] = "";
-					size_t addrstrlen;
+               size_t addrstrlen;
 
                SLPNetSockAddrStorageToString(&addr, addrstr, sizeof(addrstr));
 
@@ -1168,6 +1384,14 @@ CLEANUP:
    SLPBufferFree(sendbuf);
    SLPBufferFree(recvbuf);
    SLPXcastSocketsClose(&xcastsocks);
+   xfree(xcastsocks.sock);
+   xfree(xcastsocks.peeraddr);
+   xfree(dstifaceinfo.iface_addr);
+   xfree(dstifaceinfo.bcast_addr);
+   xfree(v4outifaceinfo.iface_addr);
+   xfree(v4outifaceinfo.bcast_addr);
+   xfree(v6outifaceinfo.iface_addr);
+   xfree(v6outifaceinfo.bcast_addr);
 
    return result;
 }
@@ -1181,12 +1405,13 @@ CLEANUP:
  * @param[in] bufsize - the size of the buffer pointed to by @p buf.
  * @param[in] callback - The callback to use for reporting results.
  * @param[in] cookie - The cookie to pass to the callback.
+ * @param[in] isV1 - Whether or not to use a v1 header.
  *
  * @return SLP_OK on success. SLP_ERROR on failure.
  */
-SLPError NetworkUcastRqstRply(SLPHandleInfo * handle, void * buf, 
-      char buftype, size_t bufsize, NetworkRplyCallback callback, 
-      void * cookie)
+SLPError NetworkUcastRqstRply(SLPHandleInfo * handle, void * buf,
+      char buftype, size_t bufsize, NetworkRplyCallback callback,
+      void * cookie, int isV1)
 {
    /*In reality, this function just sets things up for NetworkRqstRply to operate*/
 
@@ -1196,7 +1421,7 @@ SLPError NetworkUcastRqstRply(SLPHandleInfo * handle, void * buf,
    if (handle->unicastsock == SLP_INVALID_SOCKET)
       return SLP_NETWORK_ERROR;
 
-   return NetworkRqstRply(handle->unicastsock, &handle->ucaddr, handle->langtag, 0, buf, buftype, bufsize, callback, cookie);
+   return NetworkRqstRply(handle->unicastsock, &handle->ucaddr, handle->langtag, 0, buf, buftype, bufsize, callback, cookie, isV1);
 }
 
 /** Set the given socket to be non-blocking
@@ -1227,6 +1452,7 @@ static int SetNonBlocking(int sock)
  * @param[in] bufsize - the size of the buffer pointed to by buf
  * @param[in] callback - the callback to use for reporting results
  * @param[in] cookie - the cookie to pass to the callback
+ * @param[in] isV1 - Whether or not to use a V1 header.
  *
  * @return SLP_OK on success
  *
@@ -1239,7 +1465,8 @@ SLPError NetworkMultiUcastRqstRply(
                          char buftype,
                          size_t bufsize,
                          NetworkRplyCallback callback,
-                         void * cookie)
+                         void * cookie,
+                         int isV1)
 {
     /* Minimum amount of data we need to read to get the packet length */
     #define             MIN_RECEIVE_SIZE  5
@@ -1256,13 +1483,13 @@ SLPError NetworkMultiUcastRqstRply(
     SLPBuffer           sendbuf         = 0;
     SLPBuffer           udp_recvbuf     = 0;
     SLPError            result          = SLP_OK;
-    int                 langtaglen      = 0;
+    size_t              langtaglen      = 0;
     int                 prlistlen       = 0;
     int                 xid             = 0;
-    int                 mtu             = 0;
+    size_t              mtu             = 0;
     int                 ndests          = 0;    // Number of destinations
     sockfd_t            nfds            = 0;    // Number of file descriptors in the FD_SET
-    int                 send_size       = 0;
+    size_t              send_size       = 0;
     int                 selected        = 0;
     int                 xmitcount       = 0;
     int                 rplycount       = 0;
@@ -1272,6 +1499,8 @@ SLPError NetworkMultiUcastRqstRply(
     int                 udp_active      = 0;
     int                 do_send         = 1;
     unsigned short      flags;
+    char                v1flags;
+    unsigned int        msglen;
     struct timeval      now;
     struct timeval      timeout;
     struct timeval      timeout_end;
@@ -1311,9 +1540,9 @@ SLPError NetworkMultiUcastRqstRply(
     /*----------------------------------------------------*/
     /* Save off a few things we don't want to recalculate */
     /*----------------------------------------------------*/
-    langtaglen = strlen(langtag);
+    langtaglen = (int)strlen(langtag);
     xid = SLPXidGenerate();
-    mtu = SLPPropertyGetMTU();
+    mtu = getmtu();
     sendbuf = SLPBufferAlloc(mtu);
     if(sendbuf == 0)
     {
@@ -1327,8 +1556,8 @@ SLPError NetworkMultiUcastRqstRply(
         goto CLEANUP;
     }
     maxwait = SLPPropertyAsInteger("net.slp.unicastMaximumWait");
-    SLPPropertyAsIntegerVector("net.slp.unicastTimeouts", 
-                               timeouts, 
+    SLPPropertyAsIntegerVector("net.slp.unicastTimeouts",
+                               timeouts,
                                MAX_RETRANSMITS );
 
     /* Special case for fake SLP_FUNCT_DASRVRQST */
@@ -1410,14 +1639,7 @@ SLPError NetworkMultiUcastRqstRply(
     /*----------------------------------------*/
     /* re-allocate buffer if necessary        */
     /*----------------------------------------*/
-    send_size = 14 + langtaglen + bufsize;
-    if(buftype == SLP_FUNCT_SRVRQST ||
-       buftype == SLP_FUNCT_ATTRRQST ||
-       buftype == SLP_FUNCT_SRVTYPERQST)
-    {
-        /* add in room for the prlist */
-        send_size += 2 + prlistlen;
-    }
+    send_size = (int)CalcBufferSize(isV1, buftype, langtaglen, prlistlen, bufsize);
     if (send_size > mtu)
     {
         if((sendbuf = SLPBufferRealloc(sendbuf,send_size)) == 0)
@@ -1430,29 +1652,63 @@ SLPError NetworkMultiUcastRqstRply(
     /*-----------------------------------*/
     /* Add the header to the send buffer */
     /*-----------------------------------*/
-    /*version*/
-    sendbuf->curpos = sendbuf->start ;
-    *(sendbuf->curpos++)       = 2;
-    /*function id*/
-    *(sendbuf->curpos++)   = buftype;
-    /*length*/
-    PutUINT24(&sendbuf->curpos, send_size);
-    /*flags*/
-    flags = 0;
-    if (buftype == SLP_FUNCT_SRVREG)
+    if(isV1)
     {
-        flags |= SLP_FLAG_FRESH;
+         /* Version */
+         *sendbuf->curpos++ = 1;
+         /* Function-ID */
+         *sendbuf->curpos++ = buftype;
+         /* Length */
+         PutUINT16(&sendbuf->curpos, send_size);
+         /* flags */
+         v1flags = 0;
+         if (buftype == SLP_FUNCT_SRVREG)
+            v1flags |= SLPv1_FLAG_FRESH;
+         *sendbuf->curpos++ = v1flags;
+         /* dialect */
+         *sendbuf->curpos++ = 0;
+         /* Language code.  For now, we'll take the first two bytes of the tag */
+         if(langtaglen < 2)
+         {
+            *sendbuf->curpos++ = 'e';
+            *sendbuf->curpos++ = 'n';
+         }
+         else
+         {
+            *sendbuf->curpos++ = langtag[0];
+            *sendbuf->curpos++ = langtag[1];
+         }
+         /* Character encoding -- assume UTF8 */
+         PutUINT16(&sendbuf->curpos, SLP_CHAR_UTF8);
+         /* XID */
+         PutUINT16(&sendbuf->curpos, xid);
     }
-    PutUINT16(&sendbuf->curpos, flags);
-    /*ext offset*/
-    PutUINT24(&sendbuf->curpos, 0);
-    /*xid*/
-    PutUINT16(&sendbuf->curpos, xid);
-    /*lang tag len*/
-    PutUINT16(&sendbuf->curpos,langtaglen);
-    /*lang tag*/
-    memcpy(sendbuf->curpos, langtag, langtaglen);
-    sendbuf->curpos = sendbuf->curpos + langtaglen ;
+    else
+    {
+       /*version*/
+       sendbuf->curpos = sendbuf->start ;
+       *(sendbuf->curpos++)       = 2;
+       /*function id*/
+       *(sendbuf->curpos++)   = buftype;
+       /*length*/
+       PutUINT24(&sendbuf->curpos, send_size);
+       /*flags*/
+       flags = 0;
+       if (buftype == SLP_FUNCT_SRVREG)
+       {
+           flags |= SLP_FLAG_FRESH;
+       }
+       PutUINT16(&sendbuf->curpos, flags);
+       /*ext offset*/
+       PutUINT24(&sendbuf->curpos, 0);
+       /*xid*/
+       PutUINT16(&sendbuf->curpos, xid);
+       /*lang tag len*/
+       PutUINT16(&sendbuf->curpos,langtaglen);
+       /*lang tag*/
+       memcpy(sendbuf->curpos, langtag, langtaglen);
+       sendbuf->curpos = sendbuf->curpos + langtaglen ;
+    }
 
     /*-----------------------------------------------*/
     /* Add the zero length prlist to the send buffer */
@@ -1496,9 +1752,9 @@ SLPError NetworkMultiUcastRqstRply(
 #if defined(MSG_NOSIGNAL)
                     flags = MSG_NOSIGNAL;
 #endif
-                    if (sendto(udp_socket, 
+                    if (sendto(udp_socket,
                                (char*)sendbuf->start,
-                               sendbuf->curpos - sendbuf->start,
+                               (int)(sendbuf->curpos - sendbuf->start),
                                flags,
                                (struct sockaddr *)&destaddr[i],
                                sizeof destaddr[i]) < 0)
@@ -1579,7 +1835,7 @@ SLPError NetworkMultiUcastRqstRply(
         /*---------------------------------*/
         /* Wait for something to do        */
         /*---------------------------------*/
-        selected = select(nfds,
+        selected = select((int)nfds,
                           &read_fds,
                           &write_fds,
                           0,
@@ -1647,7 +1903,12 @@ SLPError NetworkMultiUcastRqstRply(
                                  MSG_PEEK,
                                  (struct sockaddr *)&peeraddr,
                                  &peeraddrlen);
-            if(bytesread == MIN_RECEIVE_SIZE
+            if (!bytesread)
+            {
+               result = SLP_NETWORK_ERROR;
+               break;
+            }
+            if (bytesread == MIN_RECEIVE_SIZE
 #ifdef _WIN32
             /* Win32 returns WSAEMSGSIZE if the message is larger than
              * the requested size, even with MSG_PEEK. But if this is the
@@ -1658,19 +1919,26 @@ SLPError NetworkMultiUcastRqstRply(
 #endif
                )
             {
-                if(AS_UINT24(peek + 2) <=  (unsigned int)mtu)
+                msglen = PEEK_LENGTH(peek);
+
+                if(msglen <=  (unsigned int)mtu)
                 {
-                    udp_recvbuf = SLPBufferRealloc(udp_recvbuf, AS_UINT24(peek + 2));
+                    udp_recvbuf = SLPBufferRealloc(udp_recvbuf, msglen);
+                    if (udp_recvbuf == 0)
+                    {
+                       result = SLP_MEMORY_ALLOC_FAILED;
+                       goto CLEANUP;
+                    }
                     bytesread = recv(udp_socket,
                                      (char*)udp_recvbuf->curpos,
-                                     udp_recvbuf->end - udp_recvbuf->curpos,
+                                     (int)(udp_recvbuf->end - udp_recvbuf->curpos),
                                      0);
-                    if(bytesread != (int32_t)AS_UINT24(peek + 2))
+                    if(bytesread != (int32_t)msglen)
                     {
                         /* This should never happen but we'll be paranoid*/
                         udp_recvbuf->end = udp_recvbuf->curpos + bytesread;
                     }
-                            
+
                     /* Message read. We're done! */
                     udp_active = 1;
                     result = SLP_OK;
@@ -1686,12 +1954,16 @@ SLPError NetworkMultiUcastRqstRply(
                                      0);
 #else
                     /* Reading MTU bytes on the socket */
-                    udp_recvbuf = SLPBufferRealloc(udp_recvbuf, mtu);
+                    if ((udp_recvbuf = SLPBufferRealloc(udp_recvbuf, mtu)) == 0)
+                    {
+                       result = SLP_MEMORY_ALLOC_FAILED;
+                       goto CLEANUP;
+                    }
                     bytesread = recv(udp_socket,
                                      (char*)udp_recvbuf->curpos,
-                                     udp_recvbuf->end - udp_recvbuf->curpos,
+                                     (int)(udp_recvbuf->end - udp_recvbuf->curpos),
                                      0);
-                    if(bytesread != mtu)
+                    if (bytesread != (int)mtu)
                     {
                         /* This should never happen but we'll be paranoid*/
                         udp_recvbuf->end = udp_recvbuf->curpos + bytesread;
@@ -1728,11 +2000,14 @@ SLPError NetworkMultiUcastRqstRply(
                     int bytes_sent;
 
                     pconn->state = CONN_TCP_SEND;
-                    bytes_sent = send(pconn->socket, (char*)sendbuf->start+pconn->send_offset, send_size-pconn->send_offset, 0);
+                     bytes_sent = send(pconn->socket,
+                                      (char*)sendbuf->start+pconn->send_offset,
+                                      (int)(send_size-pconn->send_offset),
+                                      0);
                     if (bytes_sent > 0)
                     {
                         pconn->send_offset += bytes_sent;
-                        if (pconn->send_offset >= send_size)
+                        if (pconn->send_offset >= (int)send_size)
                         {
                             pconn->state = CONN_TCP_RECEIVE;
                         }
@@ -1765,7 +2040,8 @@ SLPError NetworkMultiUcastRqstRply(
                         if ((pconn->recv_offset == pconn->recv_size) && (pconn->recv_size == MIN_RECEIVE_SIZE))
                         {
                             /* Determine the full message size */
-                            int full_size = AS_UINT24((const char *)pconn->read_buffer->start + 2);
+                            int full_size = PEEK_LENGTH(pconn->read_buffer->start);
+
                             if (full_size > MIN_RECEIVE_SIZE)
                             {
                                 SLPBuffer new_buffer = SLPBufferAlloc(full_size);
@@ -1824,7 +2100,7 @@ SLPError NetworkMultiUcastRqstRply(
                     }
                     else
                     {
-                        if (SetNonBlocking(pconn->socket) < 0)
+                        if (SetNonBlocking((int)pconn->socket) < 0)
                         {
                             result = SLP_NETWORK_ERROR;
                             closesocket(pconn->socket);
@@ -1912,9 +2188,9 @@ SLPError NetworkMultiUcastRqstRply(
 
     if(rplycount)
     {
-        result = SLP_LAST_CALL; 
+        result = SLP_LAST_CALL;
     }
-    
+
     callback(result, NULL, NULL, cookie);
 
     if(result == SLP_LAST_CALL)
@@ -1961,16 +2237,16 @@ SLPError NetworkMultiUcastRqstRply(
 /*===========================================================================
  *  TESTING CODE : compile with the following command lines:
  *
- *  $ gcc -g -DSLP_NETWORK_TEST -DDEBUG libslp_network.c 
+ *  $ gcc -g -DSLP_NETWORK_TEST -DDEBUG libslp_network.c
  *
- *  C:\> cl -DSLP_NETWORK_TEST -DDEBUG libslp_network.c 
+ *  C:\> cl -DSLP_NETWORK_TEST -DDEBUG libslp_network.c
  */
 #ifdef SLP_NETWORK_TEST
 
 int main(int argc, char * argv[])
 {
    // static routines
-   int NetworkGetMcastAddrs(const char msgtype, uint8_t * msg, 
+   int NetworkGetMcastAddrs(const char msgtype, uint8_t * msg,
          SLPIfaceInfo * ifaceinfo)
 
    // non-static routines
@@ -1981,14 +2257,14 @@ int main(int argc, char * argv[])
          size_t scopelistlen, void * peeraddr)
    sockfd_t NetworkConnectToSA(SLPHandleInfo * handle, const char * scopelist,
          size_t scopelistlen, void * saaddr)
-   SLPError NetworkRqstRply(sockfd_t sock, void * peeraddr, 
+   SLPError NetworkRqstRply(sockfd_t sock, void * peeraddr,
          const char * langtag, size_t extoffset, void * buf, char buftype,
          size_t bufsize, NetworkRplyCallback callback, void * cookie)
-   SLPError NetworkMcastRqstRply(SLPHandleInfo * handle, void * buf, 
+   SLPError NetworkMcastRqstRply(SLPHandleInfo * handle, void * buf,
          char buftype, size_t bufsize, NetworkRplyCallback callback,
          void * cookie)
-   SLPError NetworkUcastRqstRply(SLPHandleInfo * handle, void * buf, 
-         char buftype, size_t bufsize, NetworkRplyCallback callback, 
+   SLPError NetworkUcastRqstRply(SLPHandleInfo * handle, void * buf,
+         char buftype, size_t bufsize, NetworkRplyCallback callback,
          void * cookie)
 }
 #endif

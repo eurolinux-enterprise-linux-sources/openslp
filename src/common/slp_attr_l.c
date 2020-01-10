@@ -562,6 +562,12 @@ char *yytext;
  */
 #line 44 "slp_attr_l.l"
 
+#if ((__GNUC__ * 100) + __GNUC_MINOR__) >= 402
+# pragma GCC diagnostic ignored "-Wunused-function"
+# pragma GCC diagnostic ignored "-Wint-to-pointer-cast"
+# pragma GCC diagnostic ignored "-Wpointer-to-int-cast"
+#endif
+
 #undef YYLMAX
 #define YYLMAX 2048
 
@@ -643,7 +649,7 @@ attribute-value pairs for each value in the multi-val statement.
 */ 
 
 
-#line 647 "slp_attr_l.c"
+#line 653 "slp_attr_l.c"
 
 #define INITIAL 0
 #define ATTR 1
@@ -832,10 +838,10 @@ YY_DECL
 	register char *yy_cp, *yy_bp;
 	register int yy_act;
     
-#line 140 "slp_attr_l.l"
+#line 146 "slp_attr_l.l"
 
 
-#line 839 "slp_attr_l.c"
+#line 845 "slp_attr_l.c"
 
 	if ( !(yy_init) )
 		{
@@ -920,22 +926,22 @@ do_action:	/* This label is used only to access EOF actions. */
 
 case 1:
 YY_RULE_SETUP
-#line 142 "slp_attr_l.l"
+#line 148 "slp_attr_l.l"
 { ; }
 	YY_BREAK
 case 2:
 YY_RULE_SETUP
-#line 144 "slp_attr_l.l"
+#line 150 "slp_attr_l.l"
 { yylval._i = *yytext; return(yylval._i); }
 	YY_BREAK
 case 3:
 YY_RULE_SETUP
-#line 145 "slp_attr_l.l"
+#line 151 "slp_attr_l.l"
 { BEGIN ATTR; yylval._i = *yytext; return(yylval._i); }
 	YY_BREAK
 case 4:
 YY_RULE_SETUP
-#line 146 "slp_attr_l.l"
+#line 152 "slp_attr_l.l"
 {   
                if (yyleng > 0) 
                {
@@ -949,22 +955,22 @@ YY_RULE_SETUP
 /* anything else in the initial state is an error */
 case 5:
 YY_RULE_SETUP
-#line 157 "slp_attr_l.l"
+#line 163 "slp_attr_l.l"
 { yyerror("error in lexer - initial state\n"); }
 	YY_BREAK
 case 6:
 YY_RULE_SETUP
-#line 159 "slp_attr_l.l"
+#line 165 "slp_attr_l.l"
 { ; }
 	YY_BREAK
 case 7:
 YY_RULE_SETUP
-#line 160 "slp_attr_l.l"
+#line 166 "slp_attr_l.l"
 {BEGIN VALUE; yylval._i = *yytext; return(yylval._i);}
 	YY_BREAK
 case 8:
 YY_RULE_SETUP
-#line 161 "slp_attr_l.l"
+#line 167 "slp_attr_l.l"
 {
                      if (yyleng > 0 ) 
                      {
@@ -978,52 +984,52 @@ YY_RULE_SETUP
 /* make it legal to have just an attr tag enclosed in parens */
 case 9:
 YY_RULE_SETUP
-#line 172 "slp_attr_l.l"
+#line 178 "slp_attr_l.l"
 { BEGIN INITIAL; yylval._i = *yytext; return(yylval._i); }
 	YY_BREAK
 /* anything else in the attribute state is an error */
 case 10:
 YY_RULE_SETUP
-#line 175 "slp_attr_l.l"
+#line 181 "slp_attr_l.l"
 { yyerror("error in lexer - attribute state\n"); }
 	YY_BREAK
 case 11:
 YY_RULE_SETUP
-#line 177 "slp_attr_l.l"
+#line 183 "slp_attr_l.l"
 { ; }
 	YY_BREAK
 case 12:
 YY_RULE_SETUP
-#line 178 "slp_attr_l.l"
+#line 184 "slp_attr_l.l"
 { yylval._i = *yytext; return(_MULTIVAL); }
 	YY_BREAK
 case 13:
-#line 181 "slp_attr_l.l"
+#line 187 "slp_attr_l.l"
 case 14:
 YY_RULE_SETUP
-#line 181 "slp_attr_l.l"
+#line 187 "slp_attr_l.l"
 { yylval._i = strtol(yytext, (char **) 0, 0); return _INT ;};
 	YY_BREAK
 case 15:
-#line 184 "slp_attr_l.l"
+#line 190 "slp_attr_l.l"
 case 16:
 YY_RULE_SETUP
-#line 184 "slp_attr_l.l"
+#line 190 "slp_attr_l.l"
 { yylval._i = strtoul(yytext, (char **)0, 0); return _INT; };
 	YY_BREAK
 case 17:
 YY_RULE_SETUP
-#line 187 "slp_attr_l.l"
+#line 193 "slp_attr_l.l"
 { return(_TRUE); }
 	YY_BREAK
 case 18:
 YY_RULE_SETUP
-#line 188 "slp_attr_l.l"
+#line 194 "slp_attr_l.l"
 { return(_FALSE); }
 	YY_BREAK
 case 19:
 YY_RULE_SETUP
-#line 190 "slp_attr_l.l"
+#line 196 "slp_attr_l.l"
 {  
                      if (yyleng > 0) {
                         if(0 != (yylval._s = xstrdup(yytext)))
@@ -1035,7 +1041,7 @@ YY_RULE_SETUP
 	YY_BREAK
 case 20:
 YY_RULE_SETUP
-#line 199 "slp_attr_l.l"
+#line 205 "slp_attr_l.l"
 {  
                      if (yyleng > 0) {
                         if(0 != (yylval._s = xstrdup(yytext)))
@@ -1047,21 +1053,21 @@ YY_RULE_SETUP
 	YY_BREAK
 case 21:
 YY_RULE_SETUP
-#line 208 "slp_attr_l.l"
+#line 214 "slp_attr_l.l"
 { BEGIN INITIAL; yylval._i = *yytext; return(yylval._i); }
 	YY_BREAK
 /* anything else in the value state is an error */
 case 22:
 YY_RULE_SETUP
-#line 211 "slp_attr_l.l"
+#line 217 "slp_attr_l.l"
 { yyerror("error in lexer - value state\n"); }
 	YY_BREAK
 case 23:
 YY_RULE_SETUP
-#line 213 "slp_attr_l.l"
+#line 219 "slp_attr_l.l"
 ECHO;
 	YY_BREAK
-#line 1065 "slp_attr_l.c"
+#line 1071 "slp_attr_l.c"
 case YY_STATE_EOF(INITIAL):
 case YY_STATE_EOF(ATTR):
 case YY_STATE_EOF(VALUE):
@@ -2061,7 +2067,7 @@ void yyfree (void * ptr )
 
 #define YYTABLES_NAME "yytables"
 
-#line 213 "slp_attr_l.l"
+#line 219 "slp_attr_l.l"
 
 
 

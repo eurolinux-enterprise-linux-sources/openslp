@@ -127,8 +127,17 @@
 /* Define to 1 if you have the <netdb.h> header file. */
 #undef HAVE_NETDB_H
 
+/* Define to 1 if you have the `poll' function. */
+#undef HAVE_POLL
+
 /* Define to 1 if you have the <pthread.h> header file. */
 #undef HAVE_PTHREAD_H
+
+/* Define to 1 if you have the `pthread_mutexattr_setkind_np' function. */
+#undef HAVE_PTHREAD_MUTEXATTR_SETKIND_NP
+
+/* Define to 1 if you have the `pthread_mutexattr_settype' function. */
+#undef HAVE_PTHREAD_MUTEXATTR_SETTYPE
 
 /* Define to 1 if you have the <pwd.h> header file. */
 #undef HAVE_PWD_H
@@ -144,6 +153,9 @@
 
 /* whether sockaddr_in has sin_len */
 #undef HAVE_SOCKADDR_IN_SIN_LEN
+
+/* whether sockaddr_storage has ss_family */
+#undef HAVE_SOCKADDR_STORAGE_SS_FAMILY
 
 /* whether sockaddr_storage has ss_len */
 #undef HAVE_SOCKADDR_STORAGE_SS_LEN
@@ -357,6 +369,9 @@
 
 /* Define to `int' if <sys/types.h> does not define. */
 #undef pid_t
+
+/* Define to `unsigned int' if <sys/types.h> does not define. */
+#undef size_t
 
 /* defined to size_t if <sys/socket.h> does not support socklen_t data type */
 #undef socklen_t

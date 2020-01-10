@@ -42,6 +42,7 @@
 
 #include "slp.h"
 #include "libslp.h"
+#include "slp_net.h"
 #include "slp_property.h"
 #include "slp_xmalloc.h"
 #include "slp_compare.h"
@@ -198,6 +199,7 @@ static SLPError ProcessSrvTypeRqst(SLPHandleInfo * handle)
    uint8_t * curpos;
    SLPError serr = SLP_OK;
    struct sockaddr_storage peeraddr;
+   struct sockaddr_in* destaddrs = 0;
 
 /* 0                   1                   2                   3
    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
@@ -233,8 +235,26 @@ static SLPError ProcessSrvTypeRqst(SLPHandleInfo * handle)
       if (handle->dounicast == 1) 
       {
          serr = NetworkUcastRqstRply(handle, buf, SLP_FUNCT_SRVTYPERQST,
-               curpos - buf, ProcessSrvTypeRplyCallback, handle);
+               curpos - buf, ProcessSrvTypeRplyCallback, handle, false);
          break;
+      }
+      if (SLPNetIsIPV4())
+      {
+         if (KnownDASpanningListFromCache(handle,
+                                          (int)handle->params.findsrvs.scopelistlen,
+                                          handle->params.findsrvs.scopelist,
+                                          &destaddrs) > 0)
+         {
+            serr = NetworkMultiUcastRqstRply(destaddrs,
+                                             handle->langtag,
+                                             (char*)buf,
+                                             SLP_FUNCT_SRVTYPERQST,
+                                             curpos - buf,
+                                             ProcessSrvTypeRplyCallback,
+                                             handle, false);
+            xfree(destaddrs);
+            break;
+         }
       }
 #endif
       sock = NetworkConnectToDA(handle, 
@@ -245,12 +265,12 @@ static SLPError ProcessSrvTypeRqst(SLPHandleInfo * handle)
       if (sock == SLP_INVALID_SOCKET)
       {
          serr = NetworkMcastRqstRply(handle, buf, SLP_FUNCT_SRVTYPERQST, 
-               curpos - buf, ProcessSrvTypeRplyCallback, 0);
+               curpos - buf, ProcessSrvTypeRplyCallback, 0, false);
          break;
       }
       serr = NetworkRqstRply(sock, &peeraddr, handle->langtag, 0, buf,
             SLP_FUNCT_SRVTYPERQST, curpos - buf, ProcessSrvTypeRplyCallback,
-            handle);
+            handle, false);
 
       if (serr)
          NetworkDisconnectDA(handle);

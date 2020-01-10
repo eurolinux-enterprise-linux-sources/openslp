@@ -2,7 +2,7 @@
 ## Process this file with autoconf to produce a configure script
 #
 AC_PREREQ(2.59)
-AC_INIT([OpenSLP], [2.0.beta2], [openslp-devel@lists.sourceforge.net])
+AC_INIT([OpenSLP], [2.0.0], [openslp-devel@lists.sourceforge.net])
 AM_INIT_AUTOMAKE
 AC_CANONICAL_HOST
 AC_CONFIG_HEADERS([config.h])
@@ -54,6 +54,11 @@ OPENSLP_STRUCT_SA_RESTORER
 #
 # Checks for structure members
 #
+AC_CHECK_MEMBER([struct sockaddr_storage.ss_family],
+	[AC_DEFINE(HAVE_SOCKADDR_STORAGE_SS_FAMILY,1,[whether sockaddr_storage 
+has ss_family])],
+        [], [#include <sys/socket.h>])
+
 AC_CHECK_MEMBER([struct sockaddr_in.sin_len],
 	[AC_DEFINE(HAVE_SOCKADDR_IN_SIN_LEN,1,[whether sockaddr_in has sin_len])],
 	[], [#include <netinet/in.h>])
@@ -77,7 +82,8 @@ AC_FUNC_FORK
 AC_FUNC_MEMCMP
 AC_FUNC_SELECT_ARGTYPES
 AC_FUNC_VPRINTF
-AC_CHECK_FUNCS([strchr memcpy strcasecmp strdup strtol strerror isascii alarm gethostname gettimeofday select socket])
+AC_CHECK_FUNCS([strchr memcpy strcasecmp strdup strtol strerror isascii alarm gethostname gettimeofday select socket poll])
+AC_CHECK_FUNCS([pthread_mutexattr_settype pthread_mutexattr_setkind_np])
 
 #
 # SLPv1 support - default is ON
@@ -210,7 +216,7 @@ if test "x${GCC}" = xyes; then
   if test "x${debug}" = xyes; then 
     OPTFLAGS="-O0"
   else
-    OPTFLAGS="-O3"
+    OPTFLAGS="-O2"
   fi
 elif $CC -V 2>&1 | grep "WorkShop Compilers"; then
   # Solaris Workshop: enable optimizations for debug builds

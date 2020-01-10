@@ -1,15 +1,16 @@
-%global srcname		%{name}-%{version}.beta2
-
 Name:			openslp
-Version:		2.0
-Release:		0.2.beta2%{?dist}
+Version:		2.0.0
+Release:		2%{?dist}
+Epoch:			1
 Summary:		Open implementation of Service Location Protocol V2
 
 Group:			System Environment/Libraries
 License:		BSD
 URL:			http://www.openslp.org
-Source0:		http://downloads.sourceforge.net/openslp/openslp-2.0.beta2.tar.gz
+Source0:		http://downloads.sourceforge.net/openslp/%{name}-%{version}.tar.gz
 BuildRoot:		%(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
+
+Patch0:			openslp-2.0.0-double-free-and-deadcode.patch
 
 BuildRequires:		bison flex openssl-devel doxygen
 BuildRequires:		automake libtool
@@ -26,7 +27,8 @@ by RFC 2608 and RFC 2614.
 %package server
 Summary:		OpenSLP server daemon
 Group:			System Environment/Daemons
-Requires:		%{name} = %{version}-%{release}
+Requires:		%{name} = %{epoch}:%{version}-%{release}
+Requires:		/bin/netstat
 Requires(preun):	chkconfig, /sbin/service
 Requires(post):		chkconfig
 Requires(postun):	/sbin/service
@@ -44,7 +46,7 @@ register the service.
 %package devel
 Summary:		OpenSLP headers and libraries
 Group:			Development/Libraries
-Requires:		%{name} = %{version}-%{release}
+Requires:		%{name} = %{epoch}:%{version}-%{release}
 
 %description devel
 Service Location Protocol is an IETF standards track protocol that
@@ -57,7 +59,8 @@ with SLP support. It also contains developer documentation to develop
 such applications.
 
 %prep
-%setup -q -n %{srcname}
+%setup -q
+%patch0 -p1 -b .double-free-and-deadcode
 
 
 %build
@@ -134,6 +137,14 @@ fi
 
 
 %changelog
+* Wed Aug 06 2014 Vitezslav Crhonek <vcrhonek@redhat.com> - 2.0.0-2
+- Fix possible double free error and remve non reachable code
+  Resolves: #1122090
+
+* Wed May 21 2014 Vitezslav Crhonek <vcrhonek@redhat.com> - 1:2.0.0-1
+- Update to openslp-2.0.0
+  Resolves: #1065558
+
 * Thu Jul 28 2011 Vitezslav Crhonek <vcrhonek@redhat.com> - 2.0-0.2.beta2
 - Build with -fno-strict-aliasing
 

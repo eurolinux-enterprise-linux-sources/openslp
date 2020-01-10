@@ -67,9 +67,15 @@
 # define ssize_t int
 # define inet_aton(opt, bind) ((bind)->s_addr = inet_addr(opt))
 # define SLP_INVALID_SOCKET INVALID_SOCKET
-# define ETIMEDOUT 110
-# define ENOTCONN  107
-# define EAFNOSUPPORT -1
+# ifndef ETIMEDOUT
+#  define ETIMEDOUT 110
+# endif
+# ifndef ENOTCONN
+#  define ENOTCONN  107
+# endif
+# ifndef EAFNOSUPPORT
+#  define EAFNOSUPPORT -1
+# endif
 # define inet_aton(opt, bind) ((bind)->s_addr = inet_addr(opt))
 
 /*
@@ -78,10 +84,8 @@
  * Windows platforms.
  */
 
-# if ( NTDDI_VERSION >= NTDDI_LONGHORN )
 #define inet_pton openslp_inet_pton
 #define inet_ntop openslp_inet_ntop
-# endif /* if ( NTDDI_VERSION >= NTDDI_LONGHORN ) */
 
 int inet_pton(int af, const char * src, void * dst);
 const char * inet_ntop(int af, const void * src, char * dst, size_t size);
@@ -99,7 +103,7 @@ const char * inet_ntop(int af, const void * src, char * dst, size_t size);
 # include <net/if.h>
 # include <net/if_arp.h>
 # include <netdb.h>
-#if defined(LINUX)
+#if defined(LINUX) || defined (DARWIN)
 # include <ifaddrs.h>
 #endif
 

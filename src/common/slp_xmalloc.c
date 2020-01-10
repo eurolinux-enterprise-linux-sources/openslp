@@ -68,7 +68,7 @@ static void _xmalloc_log(xallocation_t * x)
    {   
       fprintf(G_xmalloc_fh,"xmalloced memory:\n");
       fprintf(G_xmalloc_fh,"   x->where = %s\n",x->where);
-      fprintf(G_xmalloc_fh,"   x->size  = %i\n",x->size);
+      fprintf(G_xmalloc_fh,"   x->size  = %lu\n",x->size);
       fprintf(G_xmalloc_fh,"   x->buf   = %p  {",x->buf);
       for (i = 0; i < x->size && i < SLPXMALLOC_MAX_BUF_LOG_LEN; i++)
          fprintf(G_xmalloc_fh,"%c",((char*)(x->buf))[i]);
@@ -350,7 +350,7 @@ void xmalloc_deinit(void)
  * @return A pointer to the duplicated memory block, or NULL on memory
  *    allocation failure.
  */
-void * memdup(const void * ptr, size_t size)
+void * _xmemdup(const void * ptr, size_t size)
 {
    void * cpy = malloc(size);
    if (cpy)

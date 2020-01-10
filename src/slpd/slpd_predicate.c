@@ -1341,6 +1341,10 @@ static FilterResult filter(const char * start, const char ** end,
                op = EQUAL;
       }
 
+      /* extension to standard: allow double equal too */
+      if (op == EQUAL && operator[1] == '=')
+          val_start++;
+
       /***** Get operands. *****/
       /**** Left. ****/
       lhs_len = operator - cur;
@@ -1397,11 +1401,8 @@ static FilterResult filter(const char * start, const char ** end,
       }
 
       SLP_ASSERT(err != FR_UNSET);
-      return err;
    }
-
-   /***** No operator. *****/
-   return FR_PARSE_ERROR;
+   return err;
 }
 
 /** Free a predicate parse tree.
@@ -2174,7 +2175,10 @@ int SLPDFilterAttributes(size_t attrlistlen, const char * attrlist,
    ((char *)taglist)[taglistlen] = tagnull;
    ((char *)attrlist)[attrlistlen] = attrnull;
 
-   return(*resultlen == 0);
+   /** TODO: incorporate err into result. */
+   (void)err;
+
+   return *resultlen == 0;
 }
 
 #ifdef DEBUG

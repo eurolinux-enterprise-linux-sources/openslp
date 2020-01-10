@@ -116,6 +116,8 @@ void OutgoingStreamReconnect(SLPList * socklist, SLPDSocket * sock)
    /* We only allow SLPD_CONFIG_MAX_RECONN reconnection retries      */
    /* before we stop                                                 */
    /*----------------------------------------------------------------*/
+   if (sock->reconns == -1)
+      sock->reconns = 0;
    sock->reconns += 1;
    if (sock->reconns > SLPD_CONFIG_MAX_RECONN)
    {
@@ -196,6 +198,7 @@ void OutgoingStreamRead(SLPList * socklist, SLPDSocket * sock)
    int bytesread;
    char peek[16];
    socklen_t peeraddrlen = sizeof(struct sockaddr_storage);
+   unsigned int msglen;
 
    if (sock->state == STREAM_READ_FIRST)
    {
@@ -207,7 +210,9 @@ void OutgoingStreamRead(SLPList * socklist, SLPDSocket * sock)
       if (bytesread > 0)
       {
          /* allocate the recvbuf big enough for the whole message */
-         sock->recvbuf = SLPBufferRealloc(sock->recvbuf, AS_UINT24(peek + 2));
+         msglen = PEEK_LENGTH(peek);
+
+         sock->recvbuf = SLPBufferRealloc(sock->recvbuf, msglen);
          if (sock->recvbuf)
             sock->state = STREAM_READ;
          else
@@ -216,7 +221,7 @@ void OutgoingStreamRead(SLPList * socklist, SLPDSocket * sock)
             sock->state = SOCKET_CLOSE;
          }
       }
-      else
+      else if (bytesread == -1)
       {
 #ifdef _WIN32
          if (WSAEWOULDBLOCK != WSAGetLastError())
@@ -228,6 +233,17 @@ void OutgoingStreamRead(SLPList * socklist, SLPDSocket * sock)
             /* Socket will be closed if connect times out               */
             OutgoingStreamReconnect(socklist, sock);
          }
+      }
+      else
+      {
+         /* An EOF occured. This could mean that the other side closed
+          * the connection due to the idle timeout. If we finished some
+          * requests try a reconnect, otherwise simply drop the connection
+          */
+         if (sock->reconns == -1)
+             OutgoingStreamReconnect(socklist,sock);
+         else
+             sock->state = SOCKET_CLOSE;
       }
    }
 
@@ -265,9 +281,11 @@ void OutgoingStreamRead(SLPList * socklist, SLPDSocket * sock)
                   sock->sendbuf = NULL;
                   sock->state = STREAM_WRITE_FIRST;
                   /* clear the reconnection count since we actually
-                   * transmitted a successful message exchange
+                   * transmitted a successful message exchange. We
+                   * use -1 to indicate that the socket had at
+                   * least one successful communication.
                    */
-                  sock->reconns = 0;
+                  sock->reconns = -1;
                   break;
             }
       }
@@ -285,6 +303,43 @@ void OutgoingStreamRead(SLPList * socklist, SLPDSocket * sock)
          }
       }
    }
+}
+
+/** Check if the socket is still alive, the server may have closed it.
+ *
+ * @param[in] fd - The socket descriptor to check.
+ *
+ * @return zero on timeout; -1 on any type of error (errno is set)
+ *
+ * @note See the UA version of this function in libslp_network.c
+ *
+ * @internal
+ */
+static int NetworkCheckConnection(sockfd_t fd)
+{
+    int r;
+#ifdef HAVE_POLL
+    struct pollfd readfd;
+#else
+    fd_set readfd;
+    struct timeval tv;
+#endif
+
+#ifdef HAVE_POLL
+    readfd.fd = (int)fd;
+    readfd.events = POLLIN;
+    while ((r = poll(&readfd, 1, 0)) == -1 && errno == EINTR)
+        ;
+#else
+    FD_ZERO(&readfd);
+    FD_SET((int)fd, &readfd);
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+    while ((r = select((int)(fd + 1), &readfd, 0, 0, &tv)) == -1 && errno == EINTR)
+        ;
+#endif
+    /* r == 0 means timeout, everything else is an error */
+    return r == 0 ? 0 : -1;
 }
 
 /** Write data to an outbound, stream-oriented socket.
@@ -320,6 +375,16 @@ void OutgoingStreamWrite(SLPList * socklist, SLPDSocket * sock)
       /* make sure that the start and curpos pointers are the same */
       sock->sendbuf->curpos = sock->sendbuf->start;
       sock->state = STREAM_WRITE;
+
+      /* test the socket if it was already used */
+      if (sock->reconns == -1 && sock->age > 10)
+      {
+         if (NetworkCheckConnection(sock->fd) != 0)
+         {
+            OutgoingStreamReconnect(socklist,sock);
+            return;
+         }
+      }
    }
 
    if (sock->sendbuf->end - sock->sendbuf->curpos > 0)
@@ -416,10 +481,29 @@ SLPDSocket * SLPDOutgoingConnect(int is_TCP, struct sockaddr_storage * addr)
    return sock;
 }
 
+/** Check that there is an outgoing socket for the specified address
+ *
+ * @param[in] addr - The address of the peer to check.
+ *
+ * @return a boolean value; true if there is, false if not.
+ */
+int SLPDHaveOutgoingConnectedSocket(struct sockaddr_storage* addr)
+{
+   SLPDSocket* sock = (SLPDSocket*)G_OutgoingSocketList.head;
+   while (sock)
+   {
+      if (sock->state >= STREAM_CONNECT_IDLE &&
+            SLPNetCompareAddrs(&sock->peeraddr, addr) == 0)
+         return 1;
+      sock = (SLPDSocket*)sock->listitem.next;
+   }
+   return 0;
+}
+
 /** Writes the datagram to the socket's peeraddr
  *
- * @param[in] sock - The socket whose peer will be sent to
- * @param[in] buffer - the buffer to send, could be the sockets sendbuf, or an item in the sendlist, etc.
+ * @param[in] sock - The socket whose peer will be sent to.
+ * @param[in] buffer - The buffer to send, could be the sockets sendbuf, or an item in the sendlist, etc.
  */
 void SLPDOutgoingDatagramWrite(SLPDSocket * sock, SLPBuffer buffer)
 {
@@ -442,9 +526,9 @@ void SLPDOutgoingDatagramWrite(SLPDSocket * sock, SLPBuffer buffer)
  */
 void SLPDOutgoingDatagramMcastWrite(SLPDSocket * sock, struct sockaddr_storage *maddr, SLPBuffer buffer)
 {
-   if (0 >= sendto(sock->fd, (char*)buffer->start,
+   if (sendto(sock->fd, (char*)buffer->start,
                (int)(buffer->end - buffer->start), 0,
-               (struct sockaddr *)maddr, SLPNetAddrLen(maddr)))
+               (struct sockaddr *)maddr, SLPNetAddrLen(maddr)) < 0)
    {
 #ifdef DEBUG
       SLPDLog("ERROR: Data could not send() in SLPDOutgoingDatagramMcastWrite()\n");
@@ -455,16 +539,15 @@ void SLPDOutgoingDatagramMcastWrite(SLPDSocket * sock, struct sockaddr_storage *
 /** Handles outgoing requests pending on specified file discriptors.
  *
  * @param[in,out] fdcount - The number of file descriptors marked in fd_sets.
- * @param[in] readfds - The set of file descriptors with pending read IO.
- * @param[in] writefds - The set of file descriptors with pending write IO.
+ * @param[in] fdset - The set of file descriptors with pending read/write IO.
  */
-void SLPDOutgoingHandler(int * fdcount, fd_set * readfds, fd_set * writefds)
+void SLPDOutgoingHandler(int * fdcount, SLPD_fdset * fdset)
 {
    SLPDSocket * sock;
    sock = (SLPDSocket *) G_OutgoingSocketList.head;
    while (sock && *fdcount)
    {
-      if (FD_ISSET(sock->fd, readfds))
+      if (SLPD_fdset_readok(fdset, sock))
       {
          switch (sock->state)
          {
@@ -486,7 +569,7 @@ void SLPDOutgoingHandler(int * fdcount, fd_set * readfds, fd_set * writefds)
 
          *fdcount = *fdcount - 1;
       }
-      else if (FD_ISSET(sock->fd, writefds))
+      else if (SLPD_fdset_writeok(fdset, sock))
       {
          switch (sock->state)
          {

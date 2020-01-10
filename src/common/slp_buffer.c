@@ -105,7 +105,8 @@ SLPBuffer SLPBufferRealloc(SLPBuffer buf, size_t size)
           * occupy the last field of the buffer.
           */
          result = xrealloc(buf, sizeof(struct _SLPBuffer) + size + 1);
-         result->allocated = size;
+         if (result)
+             result->allocated = size;
       }
       if (result)
       {
@@ -136,7 +137,7 @@ SLPBuffer SLPBufferDup(SLPBuffer buf)
 {
    SLPBuffer dup = 0;
    if (buf && (dup = SLPBufferAlloc(buf->end - buf->start)) != 0)
-      memcpy(dup->start, buf->start, buf->end - buf->start);
+      memcpy(dup->start, buf->start, buf->end - buf->start + 1);
    return dup;
 }
 

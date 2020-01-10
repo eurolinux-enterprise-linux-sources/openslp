@@ -1,0 +1,35 @@
+diff -up openslp-2.0.0/slpd/slpd_knownda.c.orig openslp-2.0.0/slpd/slpd_knownda.c
+--- openslp-2.0.0/slpd/slpd_knownda.c.orig	2014-08-05 12:34:08.644230275 +0200
++++ openslp-2.0.0/slpd/slpd_knownda.c	2014-08-05 13:17:53.979614638 +0200
+@@ -844,7 +844,6 @@ int SLPDKnownDAAdd(SLPMessage * msg, SLP
+                            &(((struct sockaddr_in6 *)&msg->peer)->sin6_addr),
+                            sizeof(struct in6_addr))))
+             {
+-               SLPDatabaseClose(dh);
+                result = SLP_ERROR_AUTHENTICATION_FAILED;
+                goto CLEANUP;
+             }
+@@ -855,7 +854,6 @@ int SLPDKnownDAAdd(SLPMessage * msg, SLP
+          if (entrydaadvert->authcount
+                && entrydaadvert->authcount != daadvert->authcount)
+          {
+-            SLPDatabaseClose(dh);
+             result = SLP_ERROR_AUTHENTICATION_FAILED;
+             goto CLEANUP;
+          }
+diff -up openslp-2.0.0/slpd/slpd_regfile.c.orig openslp-2.0.0/slpd/slpd_regfile.c
+--- openslp-2.0.0/slpd/slpd_regfile.c.orig	2014-08-05 13:38:45.671948382 +0200
++++ openslp-2.0.0/slpd/slpd_regfile.c	2014-08-05 13:38:56.503011806 +0200
+@@ -344,12 +344,6 @@ int SLPDRegFileReadSrvReg(FILE * fd, SLP
+             strcat(attrlist, ",");
+          }
+ 
+-         if (attrlist == 0)
+-         {
+-            result = SLP_ERROR_INTERNAL_ERROR;
+-            goto CLEANUP;
+-         }
+-
+          /* we need special case for keywords (why do we need these)
+             they seem like a waste of code.  Why not just use booleans */
+          if (strchr(slider1, '='))

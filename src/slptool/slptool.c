@@ -279,10 +279,16 @@ void Register(SLPToolCommandLine * cmdline)
    strncpy(srvtype, cmdline->cmdparam1, len);
    srvtype[len] = 0;
 
+   /* Clear property (if set), otherwise the register function is quite useless */
+   SLPSetProperty("net.slp.watchRegistrationPID", 0);
+
+   if ((cmdline->scopes != 0) && (*cmdline->scopes != 0))
+      SLPSetProperty("net.slp.useScopes", cmdline->scopes);
+
    if (SLPOpen(cmdline->lang, SLP_FALSE, &hslp) == SLP_OK)
    {
       if (!lt || lt > SLP_LIFETIME_MAXIMUM)
-           result = SLPReg(hslp, cmdline->cmdparam1, SLP_LIFETIME_DEFAULT, srvtype,
+           result = SLPReg(hslp, cmdline->cmdparam1, SLP_LIFETIME_MAXIMUM, srvtype,
                            cmdline->cmdparam2, SLP_TRUE, mySLPRegReport, 0);
       else
            result = SLPReg(hslp, cmdline->cmdparam1, (unsigned short)lt, srvtype,
@@ -547,7 +553,7 @@ void DisplayUsage()
 
 int main(int argc, char * argv[])
 {
-   int result;
+   int result = 0;
    SLPToolCommandLine cmdline;
 
    /* zero out the cmdline */
@@ -598,7 +604,7 @@ int main(int argc, char * argv[])
       result = 1;
    }
 
-   return 0;
+   return result;
 }
 
 /*=========================================================================*/ 

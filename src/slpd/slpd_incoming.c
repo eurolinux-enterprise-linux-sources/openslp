@@ -32,7 +32,7 @@
 
 /** Incoming request handler.
  *
- * Handles "incoming" network conversations requests made by other agents to 
+ * Handles "incoming" network conversations requests made by other agents to
  * slpd. (slpd_outgoing.c handles reqests made by slpd to other agents)
  *
  * @file       slpd_incoming.c
@@ -49,7 +49,12 @@
 
 #include "slp_xmalloc.h"
 #include "slp_message.h"
+#include "slp_v1message.h"
 #include "slp_net.h"
+
+#ifdef DARWIN
+#include "slp_network.h"
+#endif
 
 SLPList G_IncomingSocketList =
 {
@@ -73,8 +78,8 @@ static void IncomingDatagramRead(SLPList * socklist, SLPDSocket * sock)
 
    (void)socklist;
 
-   bytesread = recvfrom(sock->fd, (char*)sock->recvbuf->start, 
-         G_SlpdProperty.MTU, 0, (struct sockaddr *)&sock->peeraddr, 
+   bytesread = recvfrom(sock->fd, (char*)sock->recvbuf->start,
+         G_SlpdProperty.MTU, 0, (struct sockaddr *)&sock->peeraddr,
          &peeraddrlen);
    if (bytesread > 0)
    {
@@ -92,64 +97,63 @@ static void IncomingDatagramRead(SLPList * socklist, SLPDSocket * sock)
          case SLP_ERROR_PARSE_ERROR:
          case SLP_ERROR_VER_NOT_SUPPORTED:
          case SLP_ERROR_MESSAGE_NOT_SUPPORTED:
-            break;                    
+            break;
 
          default:
 #ifdef DARWIN
-            /* If the socket is a multicast socket, find the designated UDP output socket for sending*/
-            if(DATAGRAM_MULTICAST == sock->state)
-            {
-               if ((sendsock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) !=
-                  SLP_INVALID_SOCKET)
-               {
-                  SLPNetworkSetSndRcvBuf(sendsock, 0);
-               }
-            }
+            /* If the socket is a multicast socket, find the designated UDP output socket for sending */
+            if (sock->state == DATAGRAM_MULTICAST)
+               if ((sendsock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) != SLP_INVALID_SOCKET)
+                  SLPNetworkSetSndRcvBuf(sendsock);
 #endif
-            if(SLP_INVALID_SOCKET == sendsock)
+            if (sendsock == SLP_INVALID_SOCKET)
                sendsock = sock->fd;
 
             /* check to see if we should send anything, breaking up individual packets in the buffer
                into different sendto calls (should only be an issue with the loopback DA response)*/
-            sock->sendbuf->curpos = sock->sendbuf->start;
-            while (sock->sendbuf->curpos < sock->sendbuf->end)
+            if (sock->sendbuf)
             {
-               int packetbytes = AS_UINT24(sock->sendbuf->curpos + 2);
-               byteswritten = sendto(sendsock, (char*)sock->sendbuf->curpos,
-                     packetbytes, 0, (struct sockaddr *)&sock->peeraddr,
-                     SLPNetAddrLen(&sock->peeraddr));
-
-               if (byteswritten != packetbytes)
+               sock->sendbuf->curpos = sock->sendbuf->start;
+               while (sock->sendbuf->curpos < sock->sendbuf->end)
                {
-                  /* May be an overflow reply */
-                  int flags = AS_UINT16(sock->sendbuf->curpos + 5);
-                  if ((byteswritten == -1) &&
-#ifdef _WIN32
-                      (WSAGetLastError() == WSAEMSGSIZE) &&
-#else
-                      (errno == EMSGSIZE) &&
-#endif
-                      (flags & SLP_FLAG_OVERFLOW))
+                  int packetbytes = AS_UINT24(sock->sendbuf->curpos + 2);
+                  byteswritten = sendto(sendsock, (char*)sock->sendbuf->curpos,
+                        packetbytes, 0, (struct sockaddr *)&sock->peeraddr,
+                        SLPNetAddrLen(&sock->peeraddr));
+
+                  if (byteswritten != packetbytes)
                   {
-                      int byteswrittenmax = sendto(sendsock, (char*)sock->sendbuf->curpos,
+                     /* May be an overflow reply */
+                     int flags = AS_UINT16(sock->sendbuf->curpos + 5);
+                     if ((byteswritten == -1) &&
+#ifdef _WIN32
+                           (WSAGetLastError() == WSAEMSGSIZE) &&
+#else
+                           (errno == EMSGSIZE) &&
+#endif
+                           (flags & SLP_FLAG_OVERFLOW))
+                     {
+                        int byteswrittenmax = sendto(sendsock, (char*)sock->sendbuf->curpos,
                                 G_SlpdProperty.MTU, 0, (struct sockaddr *)&sock->peeraddr,
                                 SLPNetAddrLen(&sock->peeraddr));
-                      if (byteswrittenmax == G_SlpdProperty.MTU)
-                         byteswritten = packetbytes;
+                        if (byteswrittenmax == G_SlpdProperty.MTU)
+                           byteswritten = packetbytes;
+                     }
                   }
+
+                  if (byteswritten != packetbytes)
+                     SLPDLog("NETWORK_ERROR - %d replying %s\n", errno,
+                           SLPNetSockAddrStorageToString(&(sock->peeraddr),
+                                 addr_str, sizeof(addr_str)));
+
+                  sock->sendbuf->curpos += packetbytes;
                }
 
-               if (byteswritten != packetbytes)
-                  SLPDLog("NETWORK_ERROR - %d replying %s\n", errno,
-                        SLPNetSockAddrStorageToString(&(sock->peeraddr),
-                              addr_str, sizeof(addr_str)));
-
-               sock->sendbuf->curpos += packetbytes;
+               /* Only close if we allocated a new socket */
+               if (sendsock != sock->fd)
+                  closesocket(sendsock);
             }
-
-            if(sendsock != sock->fd)  /*Only close if we allocated a new socket*/
-              closesocket(sendsock);
-
+            break;
       }
    }
 }
@@ -234,12 +238,10 @@ static void IncomingStreamRead(SLPList * socklist, SLPDSocket * sock)
       /*---------------------------------------------------*/
       bytesread = recvfrom(sock->fd, (char *)peek, 16, MSG_PEEK,
             (struct sockaddr *)&sock->peeraddr, &peeraddrlen);
-      if (bytesread > 0)
+      if (bytesread > 0 && bytesread >= (*peek == 2? 5: 4))
       {
-         if (*peek == 2)
-            recvlen = AS_UINT24(peek + 2);
-         else if (*peek == 1) /* SLPv1 packet */
-            recvlen = AS_UINT16(peek + 2);
+         recvlen = PEEK_LENGTH(peek);
+
          /* allocate the recvbuf big enough for the whole message */
          sock->recvbuf = SLPBufferRealloc(sock->recvbuf, recvlen);
          if (sock->recvbuf)
@@ -263,7 +265,7 @@ static void IncomingStreamRead(SLPList * socklist, SLPDSocket * sock)
       /* recv the rest of the message */
       /*------------------------------*/
       bytesread = recv(sock->fd, (char *)sock->recvbuf->curpos,
-            (int)(sock->recvbuf->end - sock->recvbuf->curpos), 0);              
+            (int)(sock->recvbuf->end - sock->recvbuf->curpos), 0);
 
       if (bytesread > 0)
       {
@@ -276,16 +278,33 @@ static void IncomingStreamRead(SLPList * socklist, SLPDSocket * sock)
                 * to be emptied, so make sure there is at least a minimal buffer
                 */
                sock->sendbuf = SLPBufferAlloc(1);
-            switch (SLPDProcessMessage(&sock->peeraddr, 
+            switch (SLPDProcessMessage(&sock->peeraddr,
                   &sock->localaddr, sock->recvbuf, &sock->sendbuf, 0))
             {
                case SLP_ERROR_PARSE_ERROR:
                case SLP_ERROR_VER_NOT_SUPPORTED:
                case SLP_ERROR_MESSAGE_NOT_SUPPORTED:
                   sock->state = SOCKET_CLOSE;
-                  break;                    
+                  break;
 
                default:
+                  if (!sock->sendbuf || sock->sendbuf->end == sock->sendbuf->start)
+                  {
+                     /* no answer available, just close socket */
+                     sock->state = SOCKET_CLOSE;
+                     break;
+                  }
+
+                  /* some clients cannot cope with the OVERFLOW
+                   * bit set on a TCP stream, so always clear it
+                   */
+                  if (sock->sendbuf->end - sock->sendbuf->start > 5)
+                  {
+                     if (sock->sendbuf->start[0] == 1)
+                        sock->sendbuf->start[4] &= ~SLPv1_FLAG_OVERFLOW;
+                     else
+                        sock->sendbuf->start[5] &= ~(SLP_FLAG_OVERFLOW >> 8);
+                  }
                   sock->state = STREAM_WRITE_FIRST;
                   IncomingStreamWrite(socklist, sock);
             }
@@ -331,15 +350,15 @@ static void IncomingSocketListen(SLPList * socklist, SLPDSocket * sock)
             connsock->state = STREAM_READ_FIRST;
 #ifndef _WIN32
             {
-               /* Set the receive and send buffer low water mark to 18 bytes 
+               /* Set the receive and send buffer low water mark to 18 bytes
                 * (the length of the smallest slpv2 message). Note that Winsock
                 * doesn't support these socket level options, so we skip them.
                 */
                int lowat = 18;
-               setsockopt(connsock->fd, SOL_SOCKET, SO_RCVLOWAT, 
+               setsockopt(connsock->fd, SOL_SOCKET, SO_RCVLOWAT,
                      (char *)&lowat, sizeof(lowat));
-               setsockopt(connsock->fd, SOL_SOCKET, SO_SNDLOWAT, 
-                     (char *)&lowat, sizeof(lowat)); 
+               setsockopt(connsock->fd, SOL_SOCKET, SO_SNDLOWAT,
+                     (char *)&lowat, sizeof(lowat));
             }
 #endif
             /* set accepted socket to non blocking */
@@ -353,9 +372,11 @@ static void IncomingSocketListen(SLPList * socklist, SLPDSocket * sock)
                int fdflags = fcntl(connsock->fd, F_GETFL, 0);
                fcntl(connsock->fd, F_SETFL, fdflags | O_NONBLOCK);
             }
-#endif        
+#endif
             SLPListLinkHead(socklist, (SLPListItem *)connsock);
          }
+         else
+            closesocket(fd);
       }
    }
 }
@@ -363,16 +384,15 @@ static void IncomingSocketListen(SLPList * socklist, SLPDSocket * sock)
 /** Handles outgoing requests pending on the specified file discriptors.
  *
  * @param[in,out] fdcount - The number of file descriptors marked in fd_sets.
- * @param[in] readfds - The set of file descriptors with pending read IO.
- * @param[in] writefds - The set of file descriptors with pending read IO.
+ * @param[in] fdset - Teh file descripters with pending read/write I/O.
  */
-void SLPDIncomingHandler(int * fdcount, fd_set * readfds, fd_set * writefds)
+void SLPDIncomingHandler(int * fdcount, SLPD_fdset * fdset)
 {
    SLPDSocket * sock;
    sock = (SLPDSocket *)G_IncomingSocketList.head;
    while (sock && *fdcount)
    {
-      if (FD_ISSET(sock->fd, readfds))
+      if (SLPD_fdset_readok(fdset, sock))
       {
          switch (sock->state)
          {
@@ -384,7 +404,7 @@ void SLPDIncomingHandler(int * fdcount, fd_set * readfds, fd_set * writefds)
             case DATAGRAM_MULTICAST:
             case DATAGRAM_BROADCAST:
                IncomingDatagramRead(&G_IncomingSocketList, sock);
-               break;                      
+               break;
 
             case STREAM_READ:
             case STREAM_READ_FIRST:
@@ -397,7 +417,7 @@ void SLPDIncomingHandler(int * fdcount, fd_set * readfds, fd_set * writefds)
 
          *fdcount = *fdcount - 1;
       }
-      else if (FD_ISSET(sock->fd, writefds))
+      else if (SLPD_fdset_writeok(fdset, sock))
       {
          switch (sock->state)
          {
@@ -419,7 +439,7 @@ void SLPDIncomingHandler(int * fdcount, fd_set * readfds, fd_set * writefds)
 
 /** Age the inbound socket list.
  *
- * @param[in] seconds - The number of seconds old an entry must be to be 
+ * @param[in] seconds - The number of seconds old an entry must be to be
  *    removed from the inbound list.
  */
 void SLPDIncomingAge(time_t seconds)
@@ -468,7 +488,7 @@ void SLPDIncomingAge(time_t seconds)
  *
  * @param[in] srvtype - The service type to add.
  * @param[in] len - The length of @p srvtype.
- * @param[in] localaddr - The local address on which the message 
+ * @param[in] localaddr - The local address on which the message
  *    was received.
  *
  * @return Zero on success, or a non-zero value on failure.
@@ -486,7 +506,7 @@ int SLPDIncomingAddService(const char * srvtype, size_t len,
    /* @todo On Unix platforms, this doesn't work due to a permissions problem.
     * When slpd starts, it's running as root and can do the subscribe. After
     * it has been daemonized, it can no longer bind to multicast addresses.
-    * This works on windows*/ 
+    * This works on windows*/
 
    /* create a listening socket for node-local service request queries */
    res = SLPNetGetSrvMcastAddr(srvtype, len, SLP_SCOPE_NODE_LOCAL, &srvaddr);
@@ -542,7 +562,7 @@ int SLPDIncomingAddService(const char * srvtype, size_t len,
       res = SLPNetGetSrvMcastAddr(srvtype, len, SLP_SCOPE_SITE_LOCAL, &srvaddr);
       if (res != 0)
         return -1;
-   
+
       sock = SLPDSocketCreateBoundDatagram(localaddr, &srvaddr,
                DATAGRAM_MULTICAST);
       if (sock)
@@ -613,9 +633,32 @@ int SLPDIncomingRemoveService(const char * srvtype, size_t len)
                SLPListUnlink(&G_IncomingSocketList, (SLPListItem *) sock));
          sock = NULL;
       }
-   } 
+   }
 
    return 0;
+}
+
+/** Find an existing listening socket
+ *
+ * @param[in] sockaddr - The address of the interface to listen to.
+ *
+ * @return The existing listening socket on success, or NULL on failure.
+ *
+ * @internal
+ */
+static SLPDSocket * FindListeningSocket(struct sockaddr_storage * sockaddr)
+{
+   SLPDSocket * sock = (SLPDSocket *) G_IncomingSocketList.head;
+
+   while (sock)
+   {
+      if (sock->state == SOCKET_LISTEN
+          && SLPNetCompareAddrs(&(sock->localaddr), sockaddr) == 0)
+         break;
+      sock = (SLPDSocket *) sock->listitem.next;
+   }
+
+   return sock;
 }
 
 /** Initialize incoming socket list for all network interfaces.
@@ -624,10 +667,34 @@ int SLPDIncomingRemoveService(const char * srvtype, size_t len)
  */
 int SLPDIncomingInit(void)
 {
+#if 1
+   /*
+    * do not remove ipv6 multicast service sockets previously
+    * created from database init (slp.reg)
+    */
+#else
+   /*------------------------------------------------------------*/
+   /* First, remove all of the sockets that might be in the list */
+   /*------------------------------------------------------------*/
+   while (G_IncomingSocketList.count)
+      SLPDSocketFree((SLPDSocket *)
+            SLPListUnlink(&G_IncomingSocketList, G_IncomingSocketList.head));
+#endif
+
+   return SLPDIncomingReinit();
+}
+
+/** Reinitialize incoming socket list for all network interfaces.
+ *
+ * @return Zero on success, or a non-zero value on failure.
+ */
+int SLPDIncomingReinit(void)
+{
    struct sockaddr_storage myaddr;
    struct sockaddr_storage mcast4addr;
 #if defined(ENABLE_SLPv1)
    struct sockaddr_storage v1mcast4addr;
+   struct sockaddr_storage v1slmcast4addr;
 #endif
    struct sockaddr_storage lo4addr;
    struct sockaddr_storage lo6addr;
@@ -642,25 +709,10 @@ int SLPDIncomingInit(void)
    SLPIfaceInfo ifaces;
    int i;
 
-#if 1
-   /* 
-    * do not remove ipv6 multicast service sockets previously
-    * created from database init (slp.reg)
-    */
-#else
-   /*------------------------------------------------------------*/
-   /* First, remove all of the sockets that might be in the list */
-   /*------------------------------------------------------------*/
-   while (G_IncomingSocketList.count)
-      SLPDSocketFree((SLPDSocket *)
-            SLPListUnlink(&G_IncomingSocketList, G_IncomingSocketList.head));
-#endif
-
-
    /*---------------------------------------------------------*/
    /* set up addresses to use for ipv4 loopback and multicast */
    /*---------------------------------------------------------*/
-   if(SLPNetIsIPV4())
+   if (SLPNetIsIPV4())
    {
       int tmpaddr = INADDR_LOOPBACK;
       SLPNetSetAddr(&lo4addr, AF_INET, G_SlpdProperty.port, &tmpaddr);
@@ -669,8 +721,9 @@ int SLPDIncomingInit(void)
 #if defined(ENABLE_SLPv1)
       tmpaddr = SLPv1_DA_MCAST_ADDRESS;
       SLPNetSetAddr(&v1mcast4addr, AF_INET, G_SlpdProperty.port, &tmpaddr);
+      tmpaddr = SLPv1_SL_MCAST_ADDRESS;
+      SLPNetSetAddr(&v1slmcast4addr, AF_INET, G_SlpdProperty.port, &tmpaddr);
 #endif
-
    }
 
    /*-------------------------------------------------------*/
@@ -694,52 +747,68 @@ int SLPDIncomingInit(void)
    /*--------------------------------------------------------------------*/
    if (SLPNetIsIPV4())
    {
-      sock = SLPDSocketCreateListen(&lo4addr);
+      sock = FindListeningSocket(&lo4addr);
       if (sock)
       {
-         SLPListLinkTail(&G_IncomingSocketList, (SLPListItem *) sock);
-         SLPDLog("Listening on loopback TCP...\n");
+         SLPDLog("Already listening on IPv4 loopback.\n");
       }
       else
       {
-         SLPDLog("NETWORK_ERROR - Could not listen for TCP on IPv4 loopback\n");
-         SLPDLog("INTERNAL_ERROR - No SLPLIB support will be available with TCP\n");
-      }
-      sock = SLPDSocketCreateBoundDatagram(&lo4addr, &lo4addr, DATAGRAM_UNICAST);
-      if (sock)
-      {
-         SLPListLinkTail(&G_IncomingSocketList, (SLPListItem *) sock);
-         SLPDLog("Listening on loopback UDP...\n");
-      }
-      else
-      {
-         SLPDLog("NETWORK_ERROR - Could not listen for UDP on IPv4 loopback\n");
-         SLPDLog("INTERNAL_ERROR - No SLPLIB support will be available with UDP\n");
+         sock = SLPDSocketCreateListen(&lo4addr);
+         if (sock)
+         {
+            SLPListLinkTail(&G_IncomingSocketList, (SLPListItem *) sock);
+            SLPDLog("Listening on loopback TCP...\n");
+         }
+         else
+         {
+            SLPDLog("NETWORK_ERROR - Could not listen for TCP on IPv4 loopback\n");
+            SLPDLog("INTERNAL_ERROR - No SLPLIB support will be available with TCP\n");
+         }
+         sock = SLPDSocketCreateBoundDatagram(&lo4addr, &lo4addr, DATAGRAM_UNICAST);
+         if (sock)
+         {
+            SLPListLinkTail(&G_IncomingSocketList, (SLPListItem *) sock);
+            SLPDLog("Listening on loopback UDP...\n");
+         }
+         else
+         {
+            SLPDLog("NETWORK_ERROR - Could not listen for UDP on IPv4 loopback\n");
+            SLPDLog("INTERNAL_ERROR - No SLPLIB support will be available with UDP\n");
+         }
       }
    }
    if (SLPNetIsIPV6())
    {
-      sock = SLPDSocketCreateListen(&lo6addr);
+      sock = FindListeningSocket(&lo6addr);
       if (sock)
       {
-         SLPListLinkTail(&G_IncomingSocketList, (SLPListItem *) sock);
-         SLPDLog("Listening on IPv6 loopback TCP...\n");
+         SLPDLog("Already listening on IPv6 loopback.\n");
       }
       else
       {
-         SLPDLog("NETWORK_ERROR - Could not listen on TCP IPv6 loopback\n");
-         SLPDLog("INTERNAL_ERROR - No SLPLIB support will be available with TCP\n");
-      }
-      sock = SLPDSocketCreateBoundDatagram(&lo6addr, &lo6addr, DATAGRAM_UNICAST);
-      if (sock)
-      {
-         SLPListLinkTail(&G_IncomingSocketList, (SLPListItem *) sock);
-         SLPDLog("Listening on IPv6 loopback UDP...\n");
-      }
-      else
-      {
-         SLPDLog("NETWORK_ERROR - Could not listen on UDP IPv6 loopback\n");
-         SLPDLog("INTERNAL_ERROR - No SLPLIB support will be available with UDP\n");
+         sock = SLPDSocketCreateListen(&lo6addr);
+         if (sock)
+         {
+            SLPListLinkTail(&G_IncomingSocketList, (SLPListItem *) sock);
+            SLPDLog("Listening on IPv6 loopback TCP...\n");
+         }
+         else
+         {
+            SLPDLog("NETWORK_ERROR - Could not listen on TCP IPv6 loopback\n");
+            SLPDLog("INTERNAL_ERROR - No SLPLIB support will be available with TCP\n");
+         }
+         sock = SLPDSocketCreateBoundDatagram(&lo6addr, &lo6addr, DATAGRAM_UNICAST);
+         if (sock)
+         {
+            SLPListLinkTail(&G_IncomingSocketList, (SLPListItem *) sock);
+            SLPDLog("Listening on IPv6 loopback UDP...\n");
+         }
+         else
+         {
+            SLPDLog("NETWORK_ERROR - Could not listen on UDP IPv6 loopback\n");
+            SLPDLog("INTERNAL_ERROR - No SLPLIB support will be available with UDP\n");
+         }
       }
    }
 
@@ -752,14 +821,42 @@ int SLPDIncomingInit(void)
    /*   string in a safety way                                            */
    /*---------------------------------------------------------------------*/
 
+   ifaces.iface_addr = malloc(slp_max_ifaces*sizeof(struct sockaddr_storage));
+   if (ifaces.iface_addr == NULL)
+   {
+      SLPDLog("can't allocate %d iface_addrs\n", slp_max_ifaces);
+      exit(1);
+   }
+   ifaces.bcast_addr = malloc(slp_max_ifaces*sizeof(struct sockaddr_storage));
+   if (ifaces.bcast_addr == NULL)
+   {
+      SLPDLog("can't allocate %d bcast_addrs\n", slp_max_ifaces);
+      exit(1);
+   }
+   ifaces.bcast_addr = malloc(slp_max_ifaces*sizeof(struct sockaddr_storage));
    if (G_SlpdProperty.interfaces != NULL)
-      SLPIfaceGetInfo(G_SlpdProperty.interfaces, &ifaces, AF_UNSPEC);
-   else
+   {
+      if (SLPIfaceGetInfo(G_SlpdProperty.interfaces, &ifaces, AF_UNSPEC) < 0) {
+         SLPDLog("SLPIfaceGetInfo failed: %s\n", strerror(errno));
+         exit(1);
+      }
+   } else
       ifaces.iface_count = 0;
 
    for (i = 0; i < ifaces.iface_count; i++)
    {
       memcpy(&myaddr, &ifaces.iface_addr[i], sizeof(struct sockaddr_storage));
+
+      /*------------------------------------------------*/
+      /* Check for existing listening socket            */
+      /*------------------------------------------------*/
+      if (FindListeningSocket(&myaddr))
+      {
+         SLPDLog("Already listening on %s.\n",
+               SLPNetSockAddrStorageToString(&myaddr, addr_str,
+                     sizeof(addr_str)));
+         continue;
+      }
 
       /*------------------------------------------------*/
       /* Create TCP_LISTEN that will handle unicast TCP */
@@ -893,26 +990,41 @@ int SLPDIncomingInit(void)
       }
 
 #if defined(ENABLE_SLPv1)
-      if (G_SlpdProperty.isDA && SLPNetIsIPV4())
+      if (SLPNetIsIPV4())
       {
          /*------------------------------------------------------------*/
-         /* Create socket that will handle multicast UDP for SLPv1 DA  */
-         /* Discovery.                                                 */
-         /* Don't need to do this for ipv6, SLPv1 is not supported.    */
+         /* Create socket that will handle multicast UDP for SLPv1     */
+         /* Service Location General Multicast address.                */
          /*------------------------------------------------------------*/
-         sock = SLPDSocketCreateBoundDatagram(&myaddr, &v1mcast4addr, DATAGRAM_MULTICAST);
+         sock =  SLPDSocketCreateBoundDatagram(&myaddr, &v1slmcast4addr, DATAGRAM_MULTICAST);
          if (sock)
          {
-            SLPListLinkTail(&G_IncomingSocketList, (SLPListItem *) sock);
-            SLPDLog("SLPv1 DA Discovery Multicast socket on %s ready\n",
-                  SLPNetSockAddrStorageToString(&myaddr, addr_str,
-                        sizeof(addr_str)));
+            SLPListLinkTail(&G_IncomingSocketList,(SLPListItem*)sock);
+            SLPDLog("SLPv1 Service Location General Multicast socket on %s ready\n",
+                  SLPNetSockAddrStorageToString(&myaddr, addr_str, sizeof(addr_str)));
          }
-         else
-            SLPDLog("Couldn't bind to SLPv1 DA Discovery Multicast socket for interface %s (%s)\n",
-                  SLPNetSockAddrStorageToString(&myaddr, addr_str,
-                        sizeof(addr_str)),
-                        strerror(errno));
+
+         if (G_SlpdProperty.isDA)
+         {
+            /*------------------------------------------------------------*/
+            /* Create socket that will handle multicast UDP for SLPv1 DA  */
+            /* Discovery.                                                 */
+            /* Don't need to do this for ipv6, SLPv1 is not supported.    */
+            /*------------------------------------------------------------*/
+            sock = SLPDSocketCreateBoundDatagram(&myaddr, &v1mcast4addr, DATAGRAM_MULTICAST);
+            if (sock)
+            {
+               SLPListLinkTail(&G_IncomingSocketList, (SLPListItem *) sock);
+               SLPDLog("SLPv1 DA Discovery Multicast socket on %s ready\n",
+                     SLPNetSockAddrStorageToString(&myaddr, addr_str,
+                           sizeof(addr_str)));
+            }
+            else
+               SLPDLog("Couldn't bind to SLPv1 DA Discovery Multicast socket for interface %s (%s)\n",
+                     SLPNetSockAddrStorageToString(&myaddr, addr_str,
+                           sizeof(addr_str)),
+                           strerror(errno));
+         }
       }
 #endif
 
@@ -923,7 +1035,7 @@ int SLPDIncomingInit(void)
       if (sock)
       {
          /*These sockets are also used for the outgoing multicast*/
-         SLPDSocketAllowMcastSend(myaddr.ss_family, sock); 
+         SLPDSocketAllowMcastSend(myaddr.ss_family, sock);
          SLPListLinkTail(&G_IncomingSocketList, (SLPListItem *) sock);
          SLPDLog("Unicast socket on %s ready\n",
                SLPNetSockAddrStorageToString(&myaddr, addr_str,
@@ -934,8 +1046,8 @@ int SLPDIncomingInit(void)
                SLPNetSockAddrStorageToString(&myaddr, addr_str,
                      sizeof(addr_str)),
                      strerror(errno));
- 
-   }     
+
+   }
 
    return 0;
 }
@@ -958,7 +1070,7 @@ int SLPDIncomingDeinit(void)
                SLPListUnlink(&G_IncomingSocketList, (SLPListItem *) del));
          del = 0;
       }
-   } 
+   }
 
    return 0;
 }

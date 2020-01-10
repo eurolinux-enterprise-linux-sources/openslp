@@ -226,12 +226,20 @@ typedef unsigned long uint32_t;
 # if HAVE_GRP_H
 #  include <grp.h>
 # endif
+# if HAVE_POLL
+#  include <sys/poll.h>
+# endif
 
 # define SLPD_CONFFILE  ETCDIR "/slp.conf"
 # define SLPD_REGFILE   ETCDIR "/slp.reg"
 # define SLPD_SPIFILE   ETCDIR "/slp.spi"
 # define SLPD_LOGFILE   VARDIR "/log/slpd.log"
 # define SLPD_PIDFILE   VARDIR "/run/slpd.pid"
+
+#ifdef __hpux
+/* HP-UX defines socklen_t, but gets it wrong */
+# define socklen_t int
+#endif
 
 #endif /* ! _WIN32 */
 
