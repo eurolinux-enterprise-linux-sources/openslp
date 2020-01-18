@@ -1,6 +1,6 @@
 Name:			openslp
 Version:		2.0.0
-Release:		5%{?dist}
+Release:		6%{?dist}
 Epoch:			1
 Summary:		Open implementation of Service Location Protocol V2
 
@@ -18,6 +18,8 @@ BuildRoot:		%(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 # Patch0: creates script from upstream init script that sets multicast
 #     prior to the start of the service
 Patch0:			openslp-2.0.0-multicast-set.patch
+# Patch1: fixes buffer overflow, rhbz#1181474
+Patch1:			openslp-2.0.0-fortify-source-buffer-overflow.patch
 
 BuildRequires:		bison flex openssl-devel doxygen
 BuildRequires:		automake libtool
@@ -68,7 +70,8 @@ such applications.
 
 %prep
 %setup -q
-%patch0 -p1 -b .orig
+%patch0 -p1 -b .multicast-set
+%patch1 -p1 -b .fortify-source-buffer-overflow
 
 
 %build
@@ -149,6 +152,10 @@ rm -rf $RPM_BUILD_ROOT
 
 
 %changelog
+* Tue Jun 28 2016 Vitezslav Crhonek <vcrhonek@redhat.com> - 1:2.0.0-6
+- Fix buffer overflow termination of slpd with -D_FORTIFY_SOURCE=2
+  Resolves: #1181474
+
 * Fri Jan 24 2014 Daniel Mach <dmach@redhat.com> - 1:2.0.0-5
 - Mass rebuild 2014-01-24
 
