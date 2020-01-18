@@ -1,6 +1,6 @@
 Name:			openslp
 Version:		2.0.0
-Release:		6%{?dist}
+Release:		7%{?dist}
 Epoch:			1
 Summary:		Open implementation of Service Location Protocol V2
 
@@ -20,6 +20,10 @@ BuildRoot:		%(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 Patch0:			openslp-2.0.0-multicast-set.patch
 # Patch1: fixes buffer overflow, rhbz#1181474
 Patch1:			openslp-2.0.0-fortify-source-buffer-overflow.patch
+# Patch2: fixes heap memory corruption in slpd/slpd_process.c, which allows
+#   denial of service or potentially code execution,
+#   backported form upstream, CVE-2017-17833
+Patch2:  openslp-2.0.0-cve-2017-17833.patch
 
 BuildRequires:		bison flex openssl-devel doxygen
 BuildRequires:		automake libtool
@@ -72,6 +76,7 @@ such applications.
 %setup -q
 %patch0 -p1 -b .multicast-set
 %patch1 -p1 -b .fortify-source-buffer-overflow
+%patch2 -p1 -b .cve-2017-17833
 
 
 %build
@@ -152,6 +157,10 @@ rm -rf $RPM_BUILD_ROOT
 
 
 %changelog
+* Tue Jul 03 2018 Vitezslav Crhonek <vcrhonek@redhat.com> - 1:2.0.0-7
+- Fix possible heap memory corruption, CVE-2017-17833
+  Resolves: #1575698
+
 * Tue Jun 28 2016 Vitezslav Crhonek <vcrhonek@redhat.com> - 1:2.0.0-6
 - Fix buffer overflow termination of slpd with -D_FORTIFY_SOURCE=2
   Resolves: #1181474
