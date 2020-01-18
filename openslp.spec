@@ -1,6 +1,6 @@
 Name:			openslp
 Version:		2.0.0
-Release:		3%{?dist}
+Release:		5%{?dist}
 Epoch:			1
 Summary:		Open implementation of Service Location Protocol V2
 
@@ -149,6 +149,12 @@ rm -rf $RPM_BUILD_ROOT
 
 
 %changelog
+* Fri Jan 24 2014 Daniel Mach <dmach@redhat.com> - 1:2.0.0-5
+- Mass rebuild 2014-01-24
+
+* Fri Dec 27 2013 Daniel Mach <dmach@redhat.com> - 1:2.0.0-4
+- Mass rebuild 2013-12-27
+
 * Wed Oct 16 2013 Vitezslav Crhonek <vcrhonek@redhat.com> - 1:2.0.0-3
 - Fix full relro
   Resolves: #881226
